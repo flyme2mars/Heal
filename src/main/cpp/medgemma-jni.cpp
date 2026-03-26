@@ -35,9 +35,11 @@ static void android_log_callback(ggml_log_level level, const char * text, void *
 
 JNIEXPORT jint JNICALL
 Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject thiz, jstring modelPath, jstring mmprojPath) {
+
     std::lock_guard<std::mutex> lock(g_mutex);
     
     mtmd_helper_log_set(android_log_callback, nullptr);
+    llama_log_set(android_log_callback, nullptr);
     
     const char * c_model_path = env->GetStringUTFChars(modelPath, nullptr);
     const char * c_mmproj_path = env->GetStringUTFChars(mmprojPath, nullptr);
@@ -52,11 +54,16 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
     }
 
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = 2048;
+    cparams.n_ctx = 4096;
     cparams.n_threads = 6;
+    cparams.type_k = GGML_TYPE_TQ3_0;
+    cparams.type_v = GGML_TYPE_TQ3_0;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO; // REQUIRED for V cache quantization
+    
+    LOGI("Initializing llama context with n_ctx=%u, flash_attn=%d", cparams.n_ctx, cparams.flash_attn_type);
     g_context = llama_init_from_model(g_model, cparams);
     if (!g_context) {
-        LOGE("Failed to initialize context");
+        LOGE("Failed to initialize llama context (llama_init_from_model returned NULL)");
         return -2;
     }
 
@@ -143,7 +150,7 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobje
     // Prepare a batch for single token decoding
     llama_batch batch = llama_batch_init(1, 0, 1);
 
-    while (n_decode < 256) {
+    while (n_decode < 1024) {
         llama_token id = llama_sampler_sample(sampler, g_context, -1);
         llama_sampler_accept(sampler, id);
 
@@ -158,7 +165,18 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobje
         char piece[128];
         int n = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, true);
         if (n > 0) {
-            jstring jpiece = env->NewStringUTF(std::string(piece, n).c_str());
+            std::string s_piece(piece, n);
+            // Handle reasoning tags by explicitly wrapping the content for the Kotlin layer to parse
+            if (s_piece.find("<unused94>") != std::string::npos) {
+                s_piece = "[THOUGHT_START]";
+            } else if (s_piece.find("<unused95>") != std::string::npos) {
+                s_piece = "[THOUGHT_END]";
+            } else if (s_piece.find("<unused") != std::string::npos) {
+                // Ignore other unknown unused tags
+                continue;
+            }
+            
+            jstring jpiece = env->NewStringUTF(s_piece.c_str());
             env->CallVoidMethod(callback, onTokenMethod, jpiece);
             env->DeleteLocalRef(jpiece);
         }
