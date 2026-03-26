@@ -2278,6 +2278,69 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
     return nrow * row_size;
 }
 
+static const float TQ3_0_CENTROIDS[8] = {
+    -2.1519f, -1.3439f, -0.7560f, -0.2451f,
+     0.2451f,  0.7560f,  1.3439f,  2.1519f
+};
+
+static const float TQ3_0_BOUNDARIES[7] = {
+    -1.7479f, -1.0500f, -0.5005f, 0.0f, 0.5005f, 1.0500f, 1.7479f
+};
+
+static const float TQ3_0_SIGNS[32] = {
+    +1.0f, -1.0f, +1.0f, -1.0f, +1.0f, +1.0f, -1.0f, +1.0f,
+    -1.0f, -1.0f, +1.0f, -1.0f, +1.0f, +1.0f, -1.0f, +1.0f,
+    -1.0f, -1.0f, +1.0f, -1.0f, +1.0f, -1.0f, -1.0f, +1.0f,
+    -1.0f, +1.0f, +1.0f, -1.0f, +1.0f, -1.0f, -1.0f, +1.0f,
+};
+
+static void tq3_0_rht_forward(const float * GGML_RESTRICT in, float * GGML_RESTRICT out) {
+    for (int i = 0; i < 32; i++) {
+        out[i] = in[i] * TQ3_0_SIGNS[i];
+    }
+    for (int step = 1; step < 32; step <<= 1) {
+        for (int i = 0; i < 32; i += step << 1) {
+            for (int j = i; j < i + step; j++) {
+                float a = out[j];
+                float b = out[j + step];
+                out[j]        = a + b;
+                out[j + step] = a - b;
+            }
+        }
+    }
+    const float norm = 1.0f / sqrtf(32.0f);
+    for (int i = 0; i < 32; i++) {
+        out[i] *= norm;
+    }
+}
+
+static void tq3_0_rht_inverse(const float * GGML_RESTRICT in, float * GGML_RESTRICT out) {
+    for (int i = 0; i < 32; i++) {
+        out[i] = in[i];
+    }
+    for (int step = 1; step < 32; step <<= 1) {
+        for (int i = 0; i < 32; i += step << 1) {
+            for (int j = i; j < i + step; j++) {
+                float a = out[j];
+                float b = out[j + step];
+                out[j]        = a + b;
+                out[j + step] = a - b;
+            }
+        }
+    }
+    const float norm = 1.0f / sqrtf(32.0f);
+    for (int i = 0; i < 32; i++) {
+        out[i] *= (norm * TQ3_0_SIGNS[i]);
+    }
+}
+
+size_t quantize_tq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    const size_t row_size = ggml_row_size(GGML_TYPE_TQ3_0, n_per_row);
+    quantize_row_tq3_0_ref(src, (block_tq3_0 *)dst, (int64_t)nrow*n_per_row);
+    return nrow * row_size;
+}
+
 void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
@@ -2325,15 +2388,125 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
 
         const float d = GGML_FP16_TO_FP32(x[i].d);
 
-        for (size_t j = 0; j < sizeof(x->qs); j += 32) {
-            for (size_t l = 0; l < 4; ++l) {
-                for (size_t m = 0; m < 32; ++m) {
-                    int8_t q = (x[i].qs[j + m] >> (l*2)) & 3;
-                    *y++ = (float) (q - 1) * d;
-                }
-            }
+        for (size_t j = 0; j < QK_K / 4; ++j) {
+            uint8_t q = x[i].qs[j];
+            y[i*QK_K + 4*j + 0] = (float) ((q & 3) - 1) * d;
+            y[i*QK_K + 4*j + 1] = (float) (((q >> 2) & 3) - 1) * d;
+            y[i*QK_K + 4*j + 2] = (float) (((q >> 4) & 3) - 1) * d;
+            y[i*QK_K + 4*j + 3] = (float) (((q >> 6) & 3) - 1) * d;
         }
     }
+}
+
+void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ3_0 == 0);
+    const int64_t nb = k / QK_TQ3_0;
+
+    for (int64_t i = 0; i < nb; i++) {
+        const float * block_x = x + i * QK_TQ3_0;
+
+        float sum_sq = 0.0f;
+        for (int j = 0; j < QK_TQ3_0; j++) {
+            sum_sq += block_x[j] * block_x[j];
+        }
+        float rms = sqrtf(sum_sq / QK_TQ3_0);
+        if (rms < 1e-10f) { rms = 1.0f; }
+
+        y[i].d = GGML_FP32_TO_FP16(rms);
+
+        float normalized[32];
+        float rotated[32];
+        const float inv_rms = 1.0f / rms;
+        for (int j = 0; j < 32; j++) {
+            normalized[j] = block_x[j] * inv_rms;
+        }
+
+        tq3_0_rht_forward(normalized, rotated);
+
+        uint8_t indices[32];
+        for (int j = 0; j < 32; j++) {
+            float v = rotated[j];
+            uint8_t idx = 0;
+            for (int b = 0; b < 7; b++) {
+                if (v > TQ3_0_BOUNDARIES[b]) { idx = (uint8_t)(b + 1); }
+            }
+            indices[j] = idx;
+        }
+
+        for (int g = 0; g < 4; g++) {
+            const uint8_t * idx = indices + g * 8;
+            uint8_t * qp = y[i].qs + g * 3;
+            qp[0] = (idx[0] & 0x07) | ((idx[1] & 0x07) << 3) | ((idx[2] & 0x07) << 6);
+            qp[1] = ((idx[2] & 0x07) >> 2) | ((idx[3] & 0x07) << 1) | ((idx[4] & 0x07) << 4) | ((idx[5] & 0x07) << 7);
+            qp[2] = ((idx[5] & 0x07) >> 1) | ((idx[6] & 0x07) << 2) | ((idx[7] & 0x07) << 5);
+        }
+    }
+}
+
+void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ3_0 == 0);
+    const int64_t nb = k / QK_TQ3_0;
+
+    for (int64_t i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+
+        float rotated[32];
+        for (int g = 0; g < 4; g++) {
+            const uint8_t * qp = x[i].qs + g * 3;
+            uint8_t idx[8];
+            idx[0] =  qp[0] & 0x07;
+            idx[1] = (qp[0] >> 3) & 0x07;
+            idx[2] = (qp[0] >> 6) | ((qp[1] << 2) & 0x07);
+            idx[3] = (qp[1] >> 1) & 0x07;
+            idx[4] = (qp[1] >> 4) & 0x07;
+            idx[5] = (qp[1] >> 7) | ((qp[2] << 1) & 0x07);
+            idx[6] = (qp[2] >> 2) & 0x07;
+            idx[7] = (qp[2] >> 5) & 0x07;
+
+            for (int j = 0; j < 8; j++) {
+                rotated[g * 8 + j] = TQ3_0_CENTROIDS[idx[j]];
+            }
+        }
+
+        float normalized[32];
+        tq3_0_rht_inverse(rotated, normalized);
+
+        for (int j = 0; j < 32; j++) {
+            y[i * QK_TQ3_0 + j] = normalized[j] * d;
+        }
+    }
+}
+
+void ggml_vec_dot_tq3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_TQ3_0 == 0);
+    assert(nrc == 1);
+    GGML_UNUSED(nrc);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+    GGML_UNUSED(bs);
+
+    const block_tq3_0 * GGML_RESTRICT x = (const block_tq3_0 *)vx;
+    const block_q8_0  * GGML_RESTRICT y = (const block_q8_0 *)vy;
+
+    const int nb = n / QK_TQ3_0;
+
+    float sumf = 0.0f;
+    float tmp[QK_TQ3_0];
+
+    for (int i = 0; i < nb; ++i) {
+        // Dequantize TQ3_0 block to float (includes inverse WHT)
+        dequantize_row_tq3_0(&x[i], tmp, QK_TQ3_0);
+
+        // Dot product with Q8_0 block
+        const float d_q8 = GGML_FP16_TO_FP32(y[i].d);
+        float dot = 0.0f;
+        for (int j = 0; j < QK_TQ3_0; j++) {
+            dot += tmp[j] * (float)y[i].qs[j];
+        }
+        sumf += dot * d_q8;
+    }
+
+    *s = sumf;
 }
 
 // ====================== "True" 2-bit (de)-quantization

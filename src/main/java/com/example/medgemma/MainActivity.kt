@@ -24,6 +24,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.medgemma.ui.theme.MedGemmaTheme
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.withStyle
+import java.util.regex.Pattern
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -205,6 +216,8 @@ fun ChatMessageItem(message: ChatMessage) {
         RoundedCornerShape(20.dp, 20.dp, 20.dp, 4.dp)
     }
 
+    var isThoughtExpanded by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = alignment
@@ -214,14 +227,88 @@ fun ChatMessageItem(message: ChatMessage) {
             contentColor = contentColor,
             shape = shape,
             tonalElevation = if (message.isUser) 0.dp else 1.dp,
-            modifier = Modifier.widthIn(max = 300.dp)
+            modifier = Modifier.widthIn(max = 320.dp).animateContentSize()
         ) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyLarge,
-                    lineHeight = 22.sp
-                )
+                // Thought section (if present)
+                if (!message.isUser && message.thought != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .clickable { isThoughtExpanded = !isThoughtExpanded }
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "🧠",
+                                        fontSize = 14.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Thinking Process",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Icon(
+                                    imageVector = if (isThoughtExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            
+                            AnimatedVisibility(visible = isThoughtExpanded) {
+                                Column {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Divider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.1f))
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    MarkdownText(
+                                        text = message.thought,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 13.sp,
+                                            lineHeight = 18.sp
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Main content (MarkdownText if assistant, Text if user)
+                if (message.isUser) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyLarge,
+                        lineHeight = 22.sp
+                    )
+                } else {
+                    if (message.content.isEmpty() && message.thought != null) {
+                        // Still thinking...
+                        Text(
+                            text = "...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.5f)
+                        )
+                    } else {
+                        MarkdownText(
+                            text = message.content,
+                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
                 
                 if (message.stats != null && !message.isUser) {
                     Spacer(modifier = Modifier.height(8.dp))
@@ -250,6 +337,54 @@ fun ChatMessageItem(message: ChatMessage) {
             }
         }
     }
+}
+
+@Composable
+fun MarkdownText(
+    text: String?,
+    style: androidx.compose.ui.text.TextStyle,
+    modifier: Modifier = Modifier
+) {
+    if (text == null) return
+
+    val annotatedString = remember(text) {
+        buildAnnotatedString {
+            var lastIndex = 0
+            try {
+                val combinedPattern = Pattern.compile("(\\*\\*.*?\\*\\*|\\*.*?\\*)", Pattern.DOTALL)
+                val matcher = combinedPattern.matcher(text)
+                
+                while (matcher.find()) {
+                    append(text.substring(lastIndex, matcher.start()))
+                    val match = matcher.group()
+                    
+                    if (match.length >= 4 && match.startsWith("**") && match.endsWith("**")) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(match.substring(2, match.length - 2))
+                        }
+                    } else if (match.length >= 2 && match.startsWith("*") && match.endsWith("*")) {
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                            append(match.substring(1, match.length - 1))
+                        }
+                    } else {
+                        append(match)
+                    }
+                    lastIndex = matcher.end()
+                }
+            } catch (e: Exception) {
+                // Fallback for any regex/substring issues
+            }
+            if (lastIndex < text.length) {
+                append(text.substring(lastIndex))
+            }
+        }
+    }
+    
+    Text(
+        text = annotatedString,
+        style = style,
+        modifier = modifier
+    )
 }
 
 @Composable

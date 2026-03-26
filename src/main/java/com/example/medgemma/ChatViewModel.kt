@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 data class ChatMessage(
     val content: String,
     val isUser: Boolean,
+    val thought: String? = null,
     val stats: String? = null
 )
 
@@ -60,18 +61,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val assistantIndex = _messages.size - 1
 
             // Apply Gemma 3 / MedGemma 1.5 Chat Template
-            // Note: System instructions go inside the first user turn for Gemma
             val formattedPrompt = "<start_of_turn>user\nYou are a helpful medical assistant.\n$text<end_of_turn>\n<start_of_turn>model\n"
 
             var fullResponse = ""
+            var fullThought = ""
+            var isThinking = false
+
             ggufManager.generateStream(formattedPrompt).collect { token ->
-                if (token.startsWith("[STATS] ")) {
-                    val stats = token.removePrefix("[STATS] ")
-                    _messages[assistantIndex] = assistantMessage.copy(content = fullResponse, stats = stats)
-                } else {
-                    fullResponse += token
-                    // Update the message in the list to trigger recomposition
-                    _messages[assistantIndex] = assistantMessage.copy(content = fullResponse)
+                when {
+                    token.startsWith("[STATS] ") -> {
+                        val stats = token.removePrefix("[STATS] ")
+                        _messages[assistantIndex] = assistantMessage.copy(
+                            content = fullResponse, 
+                            thought = if (fullThought.isNotBlank()) fullThought else null,
+                            stats = stats
+                        )
+                    }
+                    token == "[THOUGHT_START]" -> {
+                        isThinking = true
+                    }
+                    token == "[THOUGHT_END]" -> {
+                        isThinking = false
+                    }
+                    else -> {
+                        if (isThinking) {
+                            fullThought += token
+                        } else {
+                            fullResponse += token
+                        }
+                        
+                        // Update the message in the list to trigger recomposition
+                        if (assistantIndex >= 0 && assistantIndex < _messages.size) {
+                            try {
+                                _messages[assistantIndex] = assistantMessage.copy(
+                                    content = fullResponse,
+                                    thought = if (fullThought.isNotBlank()) fullThought else null
+                                )
+                            } catch (e: Exception) {
+                                // Ignore concurrent modification issues during streaming
+                            }
+                        }
+                    }
                 }
                 
                 // Once we start getting tokens, we are no longer "Loading"
