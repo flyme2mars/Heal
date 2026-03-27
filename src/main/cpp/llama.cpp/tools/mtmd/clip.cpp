@@ -1220,6 +1220,11 @@ struct clip_model_loader {
                         hparams.n_merge = 4;
                         // test model (tinygemma3) has a different value, we optionally read it
                         get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
+                        
+                        // Performance Hack: Override default 896 to 448 for mobile.
+                        // This avoids costly interpolation of position embeddings and reduces token count.
+                        hparams.image_size = 448;
+                        hparams.warmup_image_size = 448;
                     } break;
 
                 case PROJECTOR_TYPE_GEMMA3NV:

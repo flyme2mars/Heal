@@ -4,7 +4,7 @@ ggml_cgraph * clip_graph_siglip::build() {
     ggml_tensor * inp = build_inp();
 
     ggml_tensor * learned_pos_embd = model.position_embeddings;
-    if (proj_type == PROJECTOR_TYPE_LFM2 || proj_type == PROJECTOR_TYPE_PHI4) {
+    if (proj_type == PROJECTOR_TYPE_LFM2 || proj_type == PROJECTOR_TYPE_PHI4 || proj_type == PROJECTOR_TYPE_GEMMA3) {
         learned_pos_embd = resize_position_embeddings();
     }
 
