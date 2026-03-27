@@ -10,8 +10,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -DGGML_NEON=ON -DGGML_I8MM=ON -DGGML_OPE
 
 # Target specific ARM architecture features if available
 # Gemma 3/MedGemma models benefit heavily from I8MM (Integer Matrix Multiplication)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+dotprod+i8mm")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8.2-a+dotprod+i8mm")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.4-a+dotprod+i8mm")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8.4-a+dotprod+i8mm")
 
 set(LLAMA_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp)
 

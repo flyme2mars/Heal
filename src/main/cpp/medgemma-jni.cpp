@@ -47,6 +47,8 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
     llama_backend_init();
 
     llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 0; // Stick to CPU for now to ensure stability
+    
     g_model = llama_model_load_from_file(c_model_path, mparams);
     if (!g_model) {
         LOGE("Failed to load model from %s", c_model_path);
@@ -54,13 +56,16 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
     }
 
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = 4096;
-    cparams.n_threads = 6;
-    cparams.type_k = GGML_TYPE_TQ3_0;
-    cparams.type_v = GGML_TYPE_TQ3_0;
-    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO; // REQUIRED for V cache quantization
+    cparams.n_ctx = 4096;         // Reduced to 4096 for better cache/RAM locality
+    cparams.n_threads = 4;        // Generation still 4 threads
+    cparams.n_threads_batch = 8;  // Prefill MUST use 8 threads
+    cparams.n_ubatch = 512;       
+    cparams.type_k = GGML_TYPE_Q8_0; // Use Q8_0 for faster CPU prefill than TQ3_0
+    cparams.type_v = GGML_TYPE_Q8_0; 
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED; 
     
-    LOGI("Initializing llama context with n_ctx=%u, flash_attn=%d", cparams.n_ctx, cparams.flash_attn_type);
+    LOGI("Initializing llama context with n_ctx=%u, KV=Q8_0, n_threads_batch=8", cparams.n_ctx);
+    
     g_context = llama_init_from_model(g_model, cparams);
     if (!g_context) {
         LOGE("Failed to initialize llama context (llama_init_from_model returned NULL)");
@@ -68,7 +73,10 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
     }
 
     mtmd_context_params mtparams = mtmd_context_params_default();
-    mtparams.n_threads = 6;
+    mtparams.n_threads = 8; // Use all cores for CLIP encoding
+    mtparams.use_gpu = false; 
+    mtparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO; 
+    mtparams.media_marker = "<image>";
     g_mtmd_ctx = mtmd_init_from_file(c_mmproj_path, g_model, mtparams);
     if (!g_mtmd_ctx) {
         LOGE("Failed to load mmproj from %s", c_mmproj_path);
@@ -91,18 +99,39 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobje
     jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V");
 
     const char * raw_prompt = env->GetStringUTFChars(prompt, nullptr);
+    LOGI("generateNative starting. prompt length: %zu", strlen(raw_prompt));
     
     // 1. Clear KV cache
     llama_memory_t mem = llama_get_memory(g_context);
     llama_memory_seq_rm(mem, -1, -1, -1);
+    LOGI("KV cache cleared");
 
     // 2. Handle Image if provided
     mtmd_bitmap * bitmap = nullptr;
     if (imageBytes != nullptr) {
         jsize len = env->GetArrayLength(imageBytes);
+        LOGI("Processing image: %d bytes", len);
         jbyte * data = env->GetByteArrayElements(imageBytes, nullptr);
-        bitmap = mtmd_helper_bitmap_init_from_buf(g_mtmd_ctx, (const unsigned char *)data, len);
+        
+        // If length matches 896x896x3, assume raw RGB888. Otherwise assume JPEG/PNG and decode.
+        if (len == 896 * 896 * 3) {
+            LOGI("Raw RGB888 pixels detected, bypassing decoder");
+            bitmap = mtmd_bitmap_init(896, 896, (const unsigned char *)data);
+        } else {
+            LOGI("Encoded image detected, using mtmd_helper_bitmap_init_from_buf");
+            bitmap = mtmd_helper_bitmap_init_from_buf(g_mtmd_ctx, (const unsigned char *)data, len);
+        }
+        
         env->ReleaseByteArrayElements(imageBytes, data, JNI_ABORT);
+        if (!bitmap) {
+            LOGE("MTMD: Failed to initialize bitmap");
+            jstring jerr = env->NewStringUTF("Error: Failed to initialize image bitmap");
+            env->CallVoidMethod(callback, onTokenMethod, jerr);
+            env->DeleteLocalRef(jerr);
+            env->ReleaseStringUTFChars(prompt, raw_prompt);
+            return;
+        }
+        LOGI("Image bitmap initialized successfully");
     }
 
     // 3. Tokenize and Prefill
@@ -116,28 +145,40 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobje
         n_bitmaps = 1;
     }
 
+    LOGI("Tokenizing input chunks...");
     int32_t token_res = mtmd_tokenize(g_mtmd_ctx, chunks, &itext, n_bitmaps > 0 ? bitmaps_array : nullptr, n_bitmaps);
     if (token_res != 0) {
-        LOGE("Tokenization failed with res %d", token_res);
+        LOGE("MTMD: Tokenization failed with res %d", token_res);
+        jstring jerr = env->NewStringUTF("Error: Tokenization failed - ensure <image> marker is present");
+        env->CallVoidMethod(callback, onTokenMethod, jerr);
+        env->DeleteLocalRef(jerr);
         if (bitmap) mtmd_bitmap_free(bitmap);
         mtmd_input_chunks_free(chunks);
         env->ReleaseStringUTFChars(prompt, raw_prompt);
         return;
     }
 
-    LOGI("Prefilling %zu chunks...", mtmd_input_chunks_size(chunks));
+    size_t n_chunks = mtmd_input_chunks_size(chunks);
+    LOGI("Tokenization successful. Chunks: %zu. Starting prefill (eval_chunks)...", n_chunks);
+    
     llama_pos n_past = 0;
-    int32_t eval_res = mtmd_helper_eval_chunks(g_mtmd_ctx, g_context, chunks, 0, 0, 512, true, &n_past);
+    int64_t tp_start = ggml_time_ms();
+    int32_t eval_res = mtmd_helper_eval_chunks(g_mtmd_ctx, g_context, chunks, 8, 0, 512, true, &n_past);
+    int64_t tp_end = ggml_time_ms();
+    LOGI("Prefill (eval_chunks) finished in %.2f seconds", (tp_end - tp_start) / 1000.0);
     
     if (eval_res != 0) {
-        LOGE("Prefill failed with res %d", eval_res);
+        LOGE("MTMD: eval_chunks failed with res %d", eval_res);
+        jstring jerr = env->NewStringUTF("Error: Prefill (eval_chunks) failed");
+        env->CallVoidMethod(callback, onTokenMethod, jerr);
+        env->DeleteLocalRef(jerr);
         if (bitmap) mtmd_bitmap_free(bitmap);
         mtmd_input_chunks_free(chunks);
         env->ReleaseStringUTFChars(prompt, raw_prompt);
         return;
     }
 
-    LOGI("Prefill done. n_past = %d. Starting generation...", n_past);
+    LOGI("Prefill complete. n_past = %d. Starting generation loop...", n_past);
 
     // 4. Generation Loop
     struct llama_sampler * sampler = llama_sampler_init_greedy();

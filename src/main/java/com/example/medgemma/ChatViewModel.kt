@@ -12,7 +12,8 @@ data class ChatMessage(
     val content: String,
     val isUser: Boolean,
     val thought: String? = null,
-    val stats: String? = null
+    val stats: String? = null,
+    val imageUri: android.net.Uri? = null
 )
 
 sealed class ChatUiState {
@@ -47,11 +48,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun sendMessage(text: String) {
-        if (text.isBlank()) return
+    fun sendMessage(text: String, imageBytes: ByteArray? = null, imageUri: android.net.Uri? = null) {
+        if (text.isBlank() && imageBytes == null) return
 
         // Add user message to UI
-        _messages.add(ChatMessage(text, isUser = true))
+        _messages.add(ChatMessage(text, isUser = true, imageUri = imageUri))
         
         viewModelScope.launch {
             _uiState.value = ChatUiState.Loading("Thinking...")
@@ -61,14 +62,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val assistantIndex = _messages.size - 1
 
             // Apply Gemma 3 / MedGemma 1.5 Chat Template
-            val formattedPrompt = "<start_of_turn>user\nYou are a helpful medical assistant.\n$text<end_of_turn>\n<start_of_turn>model\n"
+            // If image is present, the MTMD engine handles inserting the <image> tokens.
+            val imageMarker = if (imageBytes != null) "<image>\n" else ""
+            val formattedPrompt = "<start_of_turn>user\nYou are a helpful medical assistant.\n$imageMarker$text<end_of_turn>\n<start_of_turn>model\n"
+            
+            android.util.Log.d("ChatViewModel", "Formatted Prompt:\n$formattedPrompt")
 
             var fullResponse = ""
             var fullThought = ""
             var isThinking = false
 
-            ggufManager.generateStream(formattedPrompt).collect { token ->
+            ggufManager.generateStream(formattedPrompt, imageBytes).collect { token ->
                 when {
+                    token.startsWith("Error: ") -> {
+                        _uiState.value = ChatUiState.Error(token.removePrefix("Error: "))
+                    }
                     token.startsWith("[STATS] ") -> {
                         val stats = token.removePrefix("[STATS] ")
                         _messages[assistantIndex] = assistantMessage.copy(

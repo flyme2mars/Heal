@@ -24,7 +24,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags("-std=c++17")
-                arguments("-DGGML_NEON=ON")
+                arguments("-DGGML_NEON=ON", "-DCMAKE_C_FLAGS=-march=armv8.4-a+dotprod+i8mm", "-DCMAKE_CXX_FLAGS=-march=armv8.4-a+dotprod+i8mm")
                 abiFilters("arm64-v8a")
             }
         }
@@ -76,6 +76,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    implementation("io.coil-kt:coil-compose:2.6.0")
     
     // Removed MediaPipe as we now use native llama.cpp
 
