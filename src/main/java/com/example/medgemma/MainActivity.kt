@@ -337,7 +337,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
 private fun uriToByteArray(
     context: android.content.Context,
     uri: Uri,
-    maxDim: Int = 896
+    maxDim: Int = 448
 ): ByteArray? {
     return try {
         val contentResolver = context.contentResolver
@@ -347,7 +347,7 @@ private fun uriToByteArray(
 
         if (originalBitmap == null) return null
 
-        // Force exactly 896x896 as required by MedGemma MTMD optimized path
+        // Force exactly 448x448 as required by MedGemma MTMD optimized path
         val finalBitmap = Bitmap.createScaledBitmap(originalBitmap, maxDim, maxDim, true)
 
         val width = finalBitmap.width

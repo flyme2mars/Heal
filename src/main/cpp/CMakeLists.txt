@@ -15,6 +15,11 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8.4-a+dotprod+i8mm")
 
 set(LLAMA_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp)
 
+# Use optimized CPU (NEON + I8MM) as the primary engine for maximum stability on Android
+set(GGML_VULKAN OFF CACHE BOOL "Disable Vulkan" FORCE)
+set(GGML_OPENCL OFF CACHE BOOL "Disable OpenCL" FORCE)
+set(GGML_I8MM ON CACHE BOOL "Enable I8MM" FORCE)
+
 # Add llama.cpp core
 add_subdirectory(${LLAMA_SRC_DIR} llama-build)
 

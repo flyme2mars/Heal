@@ -4,6 +4,10 @@
 #include <vector>
 #include <mutex>
 #include <time.h>
+#include <sched.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
 
 #include "llama.h"
 #include "mtmd.h"
@@ -17,6 +21,37 @@ static llama_model * g_model = nullptr;
 static llama_context * g_context = nullptr;
 static mtmd_context * g_mtmd_ctx = nullptr;
 static std::mutex g_mutex;
+
+#include <sys/resource.h>
+
+static void set_performance_cores_affinity() {
+    int n_cores = sysconf(_SC_NPROCESSORS_CONF);
+    
+    // Set thread priority to high (-20 is highest, 19 is lowest)
+    // This helps the scheduler prioritize these worker threads.
+    if (setpriority(PRIO_PROCESS, 0, -10) != 0) {
+        LOGI("Failed to set thread priority: %s", strerror(errno));
+    }
+
+    if (n_cores < 8) {
+        LOGI("Device has %d cores, skipping affinity optimization", n_cores);
+        return;
+    }
+    
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    // On most 8-core Android devices (Snapdragon/Exynos), the last 4 cores (4-7) are the performance ones.
+    // This pins the current thread and its children to these cores.
+    for (int i = 4; i < 8; i++) {
+        CPU_SET(i, &cpuset);
+    }
+
+    if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
+        LOGI("Thread affinity successfully set to performance cores (4-7)");
+    } else {
+        LOGE("Failed to set thread affinity: %s", strerror(errno));
+    }
+}
 
 extern "C" {
 
@@ -38,6 +73,8 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
 
     std::lock_guard<std::mutex> lock(g_mutex);
     
+    set_performance_cores_affinity();
+    
     mtmd_helper_log_set(android_log_callback, nullptr);
     llama_log_set(android_log_callback, nullptr);
     
@@ -47,7 +84,7 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
     llama_backend_init();
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0; // Stick to CPU for now to ensure stability
+    mparams.n_gpu_layers = 33; // Offload most layers to GPU (Vulkan/CANN/OpenCL if available)
     
     g_model = llama_model_load_from_file(c_model_path, mparams);
     if (!g_model) {
@@ -57,14 +94,14 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = 4096;         // Reduced to 4096 for better cache/RAM locality
-    cparams.n_threads = 4;        // Generation still 4 threads
-    cparams.n_threads_batch = 8;  // Prefill MUST use 8 threads
+    cparams.n_threads = 4;        // Limit to 4 Performance cores
+    cparams.n_threads_batch = 4;  // Consistent threading for better stability on big.LITTLE
     cparams.n_ubatch = 512;       
     cparams.type_k = GGML_TYPE_Q8_0; // Use Q8_0 for faster CPU prefill than TQ3_0
     cparams.type_v = GGML_TYPE_Q8_0; 
     cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED; 
     
-    LOGI("Initializing llama context with n_ctx=%u, KV=Q8_0, n_threads_batch=8", cparams.n_ctx);
+    LOGI("Initializing llama context with n_ctx=%u, KV=Q8_0, n_threads=4", cparams.n_ctx);
     
     g_context = llama_init_from_model(g_model, cparams);
     if (!g_context) {
@@ -73,7 +110,7 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
     }
 
     mtmd_context_params mtparams = mtmd_context_params_default();
-    mtparams.n_threads = 8; // Use all cores for CLIP encoding
+    mtparams.n_threads = 4; // Target 4 Performance cores for CLIP encoding
     mtparams.use_gpu = false; 
     mtparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO; 
     mtparams.media_marker = "<image>";
@@ -95,6 +132,8 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobje
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_context || !g_mtmd_ctx) return;
 
+    set_performance_cores_affinity();
+
     jclass callbackClass = env->GetObjectClass(callback);
     jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V");
 
@@ -113,10 +152,10 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobje
         LOGI("Processing image: %d bytes", len);
         jbyte * data = env->GetByteArrayElements(imageBytes, nullptr);
         
-        // If length matches 896x896x3, assume raw RGB888. Otherwise assume JPEG/PNG and decode.
-        if (len == 896 * 896 * 3) {
+        // If length matches 448x448x3, assume raw RGB888. Otherwise assume JPEG/PNG and decode.
+        if (len == 448 * 448 * 3) {
             LOGI("Raw RGB888 pixels detected, bypassing decoder");
-            bitmap = mtmd_bitmap_init(896, 896, (const unsigned char *)data);
+            bitmap = mtmd_bitmap_init(448, 448, (const unsigned char *)data);
         } else {
             LOGI("Encoded image detected, using mtmd_helper_bitmap_init_from_buf");
             bitmap = mtmd_helper_bitmap_init_from_buf(g_mtmd_ctx, (const unsigned char *)data, len);
@@ -163,7 +202,7 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobje
     
     llama_pos n_past = 0;
     int64_t tp_start = ggml_time_ms();
-    int32_t eval_res = mtmd_helper_eval_chunks(g_mtmd_ctx, g_context, chunks, 8, 0, 512, true, &n_past);
+    int32_t eval_res = mtmd_helper_eval_chunks(g_mtmd_ctx, g_context, chunks, 4, 0, 512, true, &n_past);
     int64_t tp_end = ggml_time_ms();
     LOGI("Prefill (eval_chunks) finished in %.2f seconds", (tp_end - tp_start) / 1000.0);
     
