@@ -4,6 +4,10 @@
 #include <vector>
 #include <mutex>
 #include <time.h>
+#include <sched.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
 
 #include "llama.h"
 #include "mtmd.h"
@@ -17,6 +21,37 @@ static llama_model * g_model = nullptr;
 static llama_context * g_context = nullptr;
 static mtmd_context * g_mtmd_ctx = nullptr;
 static std::mutex g_mutex;
+
+#include <sys/resource.h>
+
+static void set_performance_cores_affinity() {
+    int n_cores = sysconf(_SC_NPROCESSORS_CONF);
+    
+    // Set thread priority to high (-20 is highest, 19 is lowest)
+    // This helps the scheduler prioritize these worker threads.
+    if (setpriority(PRIO_PROCESS, 0, -10) != 0) {
+        LOGI("Failed to set thread priority: %s", strerror(errno));
+    }
+
+    if (n_cores < 8) {
+        LOGI("Device has %d cores, skipping affinity optimization", n_cores);
+        return;
+    }
+    
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    // On most 8-core Android devices (Snapdragon/Exynos), the last 4 cores (4-7) are the performance ones.
+    // This pins the current thread and its children to these cores.
+    for (int i = 4; i < 8; i++) {
+        CPU_SET(i, &cpuset);
+    }
+
+    if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
+        LOGI("Thread affinity successfully set to performance cores (4-7)");
+    } else {
+        LOGE("Failed to set thread affinity: %s", strerror(errno));
+    }
+}
 
 extern "C" {
 
@@ -37,6 +72,8 @@ JNIEXPORT jint JNICALL
 Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject thiz, jstring modelPath, jstring mmprojPath) {
 
     std::lock_guard<std::mutex> lock(g_mutex);
+    
+    set_performance_cores_affinity();
     
     mtmd_helper_log_set(android_log_callback, nullptr);
     llama_log_set(android_log_callback, nullptr);
@@ -94,6 +131,8 @@ JNIEXPORT void JNICALL
 Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobject thiz, jstring prompt, jbyteArray imageBytes, jobject callback) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_context || !g_mtmd_ctx) return;
+
+    set_performance_cores_affinity();
 
     jclass callbackClass = env->GetObjectClass(callback);
     jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V");
