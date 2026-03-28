@@ -21,12 +21,18 @@ class GgufInferenceManager {
         fun onToken(token: String)
     }
 
-    private var isInitialized = false
+    var isInitialized = false
+        private set
 
     suspend fun initialize(modelPath: String, mmprojPath: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            if (!File(modelPath).exists()) return@withContext Result.failure(Exception("Model file not found"))
-            if (!File(mmprojPath).exists()) return@withContext Result.failure(Exception("mmproj file not found"))
+            if (!File(modelPath).exists()) return@withContext Result.failure(Exception("Model file not found at $modelPath"))
+            if (!File(mmprojPath).exists()) return@withContext Result.failure(Exception("mmproj file not found at $mmprojPath"))
+
+            if (isInitialized) {
+                deinitNative()
+                isInitialized = false
+            }
 
             val status = initNative(modelPath, mmprojPath)
             if (status == 0) {
@@ -38,6 +44,13 @@ class GgufInferenceManager {
         } catch (e: Exception) {
             Log.e(TAG, "Initialization error", e)
             Result.failure(e)
+        }
+    }
+
+    fun deinitialize() {
+        if (isInitialized) {
+            deinitNative()
+            isInitialized = false
         }
     }
 
@@ -65,5 +78,6 @@ class GgufInferenceManager {
 
     // Native methods
     private external fun initNative(modelPath: String, mmprojPath: String): Int
+    private external fun deinitNative()
     private external fun generateNative(prompt: String, imageBytes: ByteArray?, callback: InferenceCallback)
 }

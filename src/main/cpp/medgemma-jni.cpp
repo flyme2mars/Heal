@@ -128,6 +128,29 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(JNIEnv *env, jobject t
 }
 
 JNIEXPORT void JNICALL
+Java_com_example_medgemma_GgufInferenceManager_deinitNative(JNIEnv *env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    
+    if (g_mtmd_ctx) {
+        mtmd_free(g_mtmd_ctx);
+        g_mtmd_ctx = nullptr;
+    }
+    
+    if (g_context) {
+        llama_free(g_context);
+        g_context = nullptr;
+    }
+    
+    if (g_model) {
+        llama_model_free(g_model);
+        g_model = nullptr;
+    }
+    
+    llama_backend_free();
+    LOGI("Native engine deinitialized");
+}
+
+JNIEXPORT void JNICALL
 Java_com_example_medgemma_GgufInferenceManager_generateNative(JNIEnv *env, jobject thiz, jstring prompt, jbyteArray imageBytes, jobject callback) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_context || !g_mtmd_ctx) return;

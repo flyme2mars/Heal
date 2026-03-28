@@ -52,6 +52,11 @@ import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -117,6 +122,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     var inputText by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var imageBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var showModelSheet by remember { mutableStateOf(false) }
     
     val messages = viewModel.messages
     val uiState by viewModel.uiState.collectAsState()
@@ -148,11 +154,30 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
         topBar = {
             CenterAlignedTopAppBar(
                 title = { 
-                    Text(
-                        "Heal", 
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleLarge
-                    ) 
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "Heal", 
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        val engineStatus = when (uiState) {
+                            is ChatUiState.NoModel -> "No Model"
+                            is ChatUiState.ModelAvailable -> "Model Downloaded"
+                            is ChatUiState.Loading -> "Initializing..."
+                            is ChatUiState.Error -> "Engine Error"
+                            is ChatUiState.Idle -> "Ready"
+                        }
+                        Text(
+                            engineStatus,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (uiState is ChatUiState.Idle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showModelSheet = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Models")
+                    }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
@@ -309,26 +334,261 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                                 style = MaterialTheme.typography.bodySmall
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)),
-                                modifier = Modifier.fillMaxWidth()
+                            Button(
+                                onClick = { showModelSheet = true },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer)
                             ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        "How to fix this?",
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
-                                    Text(
-                                        "1. Ensure GGUF model and mmproj are in /data/local/tmp/models/\n2. Verify NDK build in Android Studio\n3. Check Logcat for 'MedGemmaNative' tags\n4. PRO TIP: Enable 'Monster Mode' or 'High Performance' in battery settings for 2x speed!",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        lineHeight = 16.sp
-                                    )
+                                Text("Check Models")
+                            }
+                        }
+                    }
+                }
+
+                if (uiState is ChatUiState.NoModel) {
+                    item {
+                        Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(64.dp),
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text("Model not found", fontWeight = FontWeight.Bold)
+                                Text("Download MedGemma to start chatting", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
+                                Spacer(modifier = Modifier.height(24.dp))
+                                Button(onClick = { showModelSheet = true }) {
+                                    Text("Open Model Hub")
                                 }
                             }
                         }
                     }
                 }
+
+                if (uiState is ChatUiState.ModelAvailable) {
+                    item {
+                        Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(64.dp),
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text("Model downloaded", fontWeight = FontWeight.Bold)
+                                Text("Load the model to start chatting", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
+                                Spacer(modifier = Modifier.height(24.dp))
+                                Button(onClick = { viewModel.initializeEngine() }) {
+                                    Text("Load MedGemma")
+                                }
+                                TextButton(onClick = { showModelSheet = true }) {
+                                    Text("Manage Models")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showModelSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showModelSheet = false },
+            sheetState = rememberModalBottomSheetState()
+        ) {
+            ModelHubContent(viewModel)
+        }
+    }
+}
+
+@Composable
+fun ModelHubContent(viewModel: ChatViewModel) {
+    val downloadProgress by viewModel.modelManager.downloadProgress.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
+    val scope = rememberCoroutineScope()
+    var tokenInput by remember { mutableStateOf(viewModel.modelManager.hfToken ?: "") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text("Model Hub", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("Manage your medical AI brain", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
+        
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // HF Token Section
+        Text("Hugging Face Access Token", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("Required for gated models. Get it at huggingface.co/settings/tokens", style = MaterialTheme.typography.labelSmall)
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = tokenInput,
+            onValueChange = { 
+                tokenInput = it
+                viewModel.modelManager.hfToken = it 
+            },
+            placeholder = { Text("hf_xxxxxxxxxxxxxxxxx") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            trailingIcon = {
+                if (tokenInput.isNotBlank()) {
+                    IconButton(onClick = { 
+                        tokenInput = ""
+                        viewModel.modelManager.hfToken = ""
+                    }) {
+                        Icon(Icons.Default.Clear, contentDescription = "Clear")
+                    }
+                }
+            }
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Engine Status Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = when(uiState) {
+                    is ChatUiState.Idle -> MaterialTheme.colorScheme.primaryContainer
+                    is ChatUiState.Loading -> MaterialTheme.colorScheme.surfaceVariant
+                    is ChatUiState.Error -> MaterialTheme.colorScheme.errorContainer
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                }
+            )
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Engine Status", style = MaterialTheme.typography.labelMedium)
+                    val statusText = when(uiState) {
+                        is ChatUiState.Idle -> "Ready to assist"
+                        is ChatUiState.Loading -> "Initializing..."
+                        is ChatUiState.Error -> "Initialization failed"
+                        is ChatUiState.NoModel -> "Models missing"
+                        else -> "Unknown"
+                    }
+                    Text(statusText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+                
+                val llmPath = viewModel.modelManager.getDownloadedLlmPath()
+                val mmprojPath = viewModel.modelManager.getDownloadedMmprojPath()
+                
+                if (llmPath != null && mmprojPath != null && uiState !is ChatUiState.Idle && uiState !is ChatUiState.Loading) {
+                    Button(onClick = { viewModel.initializeEngine() }) {
+                        Text("Load Engine")
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text("Select Language Model", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("Reasoning models optimized for medical analysis", style = MaterialTheme.typography.labelSmall)
+        Spacer(modifier = Modifier.height(12.dp))
+
+        viewModel.modelManager.availableLlmModels.forEach { model ->
+            ModelItem(
+                model = model,
+                isDownloaded = viewModel.modelManager.isModelDownloaded(model.fileName),
+                downloadProgress = downloadProgress[model.fileName],
+                onDownload = { viewModel.downloadModel(model) }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text("Select Vision Encoder (mmproj)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("Required for medical image processing", style = MaterialTheme.typography.labelSmall)
+        Spacer(modifier = Modifier.height(12.dp))
+
+        viewModel.modelManager.availableMmprojModels.forEach { model ->
+            ModelItem(
+                model = model,
+                isDownloaded = viewModel.modelManager.isModelDownloaded(model.fileName),
+                downloadProgress = downloadProgress[model.fileName],
+                onDownload = { viewModel.downloadModel(model) }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+    }
+}
+
+@Composable
+fun ModelItem(
+    model: GgufModel,
+    isDownloaded: Boolean,
+    downloadProgress: DownloadProgress?,
+    onDownload: () -> Unit
+) {
+    val isDownloading = downloadProgress?.isDownloading == true
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isDownloaded) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f) 
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        ),
+        border = if (isDownloaded) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)) else null
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(model.name, fontWeight = FontWeight.Bold)
+                    Text(model.fileName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                }
+
+                if (isDownloaded) {
+                    Icon(
+                        Icons.Default.CheckCircle, 
+                        contentDescription = "Downloaded",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                } else if (isDownloading) {
+                    CircularProgressIndicator(
+                        progress = downloadProgress?.progress ?: 0f,
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 3.dp
+                    )
+                } else {
+                    IconButton(onClick = onDownload) {
+                        Icon(Icons.Default.Download, contentDescription = "Download", tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            
+            if (isDownloading) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = downloadProgress?.progress ?: 0f,
+                    modifier = Modifier.fillMaxWidth().clip(CircleShape),
+                )
+                Text(
+                    "Downloading... ${( (downloadProgress?.progress ?: 0f) * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            
+            if (downloadProgress?.error != null) {
+                Text(
+                    "Error: ${downloadProgress.error}",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
         }
     }

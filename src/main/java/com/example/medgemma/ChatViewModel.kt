@@ -17,7 +17,9 @@ data class ChatMessage(
 )
 
 sealed class ChatUiState {
-    object Idle : ChatUiState()
+    object Idle : ChatUiState() // Engine is loaded and ready
+    object NoModel : ChatUiState() // Models need downloading
+    object ModelAvailable : ChatUiState() // Models downloaded but not loaded
     data class Loading(val message: String = "Loading...") : ChatUiState()
     data class Error(val message: String) : ChatUiState()
 }
@@ -25,19 +27,47 @@ sealed class ChatUiState {
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val ggufManager = GgufInferenceManager()
+    val modelManager = ModelManager(application)
 
     private val _messages = mutableStateListOf<ChatMessage>()
     val messages: List<ChatMessage> = _messages
 
-    private val _uiState = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
+    private val _uiState = MutableStateFlow<ChatUiState>(ChatUiState.NoModel)
     val uiState = _uiState.asStateFlow()
 
     init {
+        checkModelStatus()
+    }
+
+    fun checkModelStatus() {
+        val llmPath = modelManager.getDownloadedLlmPath()
+        val mmprojPath = modelManager.getDownloadedMmprojPath()
+        
+        if (llmPath != null && mmprojPath != null) {
+            if (!ggufManager.isInitialized) {
+                _uiState.value = ChatUiState.ModelAvailable
+            } else {
+                _uiState.value = ChatUiState.Idle
+            }
+        } else {
+            _uiState.value = ChatUiState.NoModel
+        }
+    }
+
+    fun initializeEngine() {
         viewModelScope.launch {
+            val llmPath = modelManager.getDownloadedLlmPath()
+            val mmprojPath = modelManager.getDownloadedMmprojPath()
+
+            if (llmPath == null || mmprojPath == null) {
+                _uiState.value = ChatUiState.Error("Please download both Model and mmproj first.")
+                return@launch
+            }
+
             _uiState.value = ChatUiState.Loading("Initializing GGUF Engine...")
             val result = ggufManager.initialize(
-                modelPath = "/data/local/tmp/models/model.gguf",
-                mmprojPath = "/data/local/tmp/models/mmproj.gguf"
+                modelPath = llmPath,
+                mmprojPath = mmprojPath
             )
             
             if (result.isSuccess) {
@@ -48,8 +78,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun downloadModel(model: GgufModel) {
+        viewModelScope.launch {
+            modelManager.downloadModel(model)
+            checkModelStatus()
+        }
+    }
+
     fun sendMessage(text: String, imageBytes: ByteArray? = null, imageUri: android.net.Uri? = null) {
         if (text.isBlank() && imageBytes == null) return
+        
+        if (!ggufManager.isInitialized) {
+            _uiState.value = ChatUiState.Error("Engine not initialized. Please Load Engine from Model Hub.")
+            return
+        }
 
         // Add user message to UI
         _messages.add(ChatMessage(text, isUser = true, imageUri = imageUri))
