@@ -12,63 +12,49 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// Your custom palette
-private val BrandRed = Color(0xFFFF3B3B)
-private val DeepCharcoal = Color(0xFF11131A)
-private val SurfaceGrey = Color(0xFF1C1F26) // Slightly lighter for card depth
+// Premium Monochromatic Palette with subtle Red
+private val BrandRed = Color(0xFFFF3131) // Pure, vibrant red
+private val PureBlack = Color(0xFF000000)
+private val DarkGrey = Color(0xFF121212) // Slightly lighter for subtle elevation
+private val MidGrey = Color(0xFF1E1E1E)
+private val TextPrimary = Color(0xFFF5F5F7) // Off-white for readability
+private val TextSecondary = Color(0xFFA1A1A6) // iOS-style muted text
 
 private val DarkColorScheme = darkColorScheme(
     primary = BrandRed,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFF8B0000),
-    onPrimaryContainer = Color.White,
-    secondary = Color(0xFF2D3139),
-    onSecondary = Color.White,
-    background = DeepCharcoal,
-    surface = DeepCharcoal,
-    onBackground = Color(0xFFE1E3E0),
-    onSurface = Color(0xFFE1E3E0),
-    secondaryContainer = SurfaceGrey,
-    onSecondaryContainer = Color.White
+    primaryContainer = Color(0xFF2C0000),
+    onPrimaryContainer = BrandRed,
+    secondary = TextSecondary,
+    onSecondary = PureBlack,
+    background = PureBlack,
+    surface = PureBlack,
+    onBackground = TextPrimary,
+    onSurface = TextPrimary,
+    surfaceVariant = DarkGrey,
+    onSurfaceVariant = TextSecondary,
+    secondaryContainer = MidGrey,
+    onSecondaryContainer = TextPrimary,
+    outline = Color(0xFF333333)
 )
 
-private val LightColorScheme = lightColorScheme(
-    primary = BrandRed,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFFFDAD4),
-    onPrimaryContainer = Color(0xFF410001),
-    secondary = Color(0xFF775651),
-    onSecondary = Color.White,
-    background = Color.White,
-    surface = Color.White,
-    onBackground = DeepCharcoal,
-    onSurface = DeepCharcoal,
-    secondaryContainer = Color(0xFFF0F0F0),
-    onSecondaryContainer = DeepCharcoal
-)
+private val LightColorScheme = DarkColorScheme // Forcing dark mode for premium look
 
 @Composable
 fun MedGemmaTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is disabled by default to force your custom Red/Charcoal theme
+    darkTheme: Boolean = true, // Force dark for premium aesthetic
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
+    val colorScheme = DarkColorScheme
     
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.background.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            window.statusBarColor = PureBlack.toArgb()
+            window.navigationBarColor = PureBlack.toArgb()
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
         }
     }
 
