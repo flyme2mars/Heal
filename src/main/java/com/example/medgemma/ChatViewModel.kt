@@ -17,38 +17,39 @@ data class ChatMessage(
 )
 
 sealed class ChatUiState {
-    object Idle : ChatUiState() // Engine is loaded and ready
-    object NoModel : ChatUiState() // Models need downloading
-    object ModelAvailable : ChatUiState() // Models downloaded but not loaded
+    object Idle : ChatUiState()
+    object NoModel : ChatUiState()
+    object ModelAvailable : ChatUiState()
     data class Loading(val message: String = "Loading...") : ChatUiState()
     data class Error(val message: String) : ChatUiState()
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
-
     private val ggufManager = GgufInferenceManager()
     val modelManager = ModelManager(application)
-
     private val _messages = mutableStateListOf<ChatMessage>()
     val messages: List<ChatMessage> = _messages
-
     private val _uiState = MutableStateFlow<ChatUiState>(ChatUiState.NoModel)
     val uiState = _uiState.asStateFlow()
+    private val _isGenerating = MutableStateFlow(false)
+    val isGenerating = _isGenerating.asStateFlow()
 
-    init {
-        checkModelStatus()
+    init { checkModelStatus() }
+
+    fun stopGeneration() {
+        ggufManager.stopGeneration()
+        _isGenerating.value = false
+    }
+
+    fun clearMessages() {
+        _messages.clear()
     }
 
     fun checkModelStatus() {
         val llmPath = modelManager.getDownloadedLlmPath()
         val mmprojPath = modelManager.getDownloadedMmprojPath()
-        
         if (llmPath != null && mmprojPath != null) {
-            if (!ggufManager.isInitialized) {
-                _uiState.value = ChatUiState.ModelAvailable
-            } else {
-                _uiState.value = ChatUiState.Idle
-            }
+            _uiState.value = if (!ggufManager.isInitialized) ChatUiState.ModelAvailable else ChatUiState.Idle
         } else {
             _uiState.value = ChatUiState.NoModel
         }
@@ -58,23 +59,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val llmPath = modelManager.getDownloadedLlmPath()
             val mmprojPath = modelManager.getDownloadedMmprojPath()
-
-            if (llmPath == null || mmprojPath == null) {
-                _uiState.value = ChatUiState.Error("Please download both Model and mmproj first.")
-                return@launch
-            }
-
-            _uiState.value = ChatUiState.Loading("Initializing GGUF Engine...")
-            val result = ggufManager.initialize(
-                modelPath = llmPath,
-                mmprojPath = mmprojPath
-            )
-            
-            if (result.isSuccess) {
-                _uiState.value = ChatUiState.Idle
-            } else {
-                _uiState.value = ChatUiState.Error(result.exceptionOrNull()?.message ?: "Unknown init error")
-            }
+            if (llmPath == null || mmprojPath == null) return@launch
+            _uiState.value = ChatUiState.Loading("Initializing...")
+            val result = ggufManager.initialize(llmPath, mmprojPath)
+            _uiState.value = if (result.isSuccess) ChatUiState.Idle else ChatUiState.Error("Init failed")
         }
     }
 
@@ -87,79 +75,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage(text: String, imageBytes: ByteArray? = null, imageUri: android.net.Uri? = null) {
         if (text.isBlank() && imageBytes == null) return
-        
-        if (!ggufManager.isInitialized) {
-            _uiState.value = ChatUiState.Error("Engine not initialized. Please Load Engine from Model Hub.")
-            return
-        }
-
-        // Add user message to UI
+        if (!ggufManager.isInitialized) return
         _messages.add(ChatMessage(text, isUser = true, imageUri = imageUri))
-        
         viewModelScope.launch {
+            _isGenerating.value = true
             _uiState.value = ChatUiState.Loading("Thinking...")
-            
             val assistantMessage = ChatMessage("", isUser = false)
             _messages.add(assistantMessage)
             val assistantIndex = _messages.size - 1
-
-            // Apply Gemma 3 / MedGemma 1.5 Chat Template
-            // If image is present, the MTMD engine handles inserting the <image> tokens.
             val imageMarker = if (imageBytes != null) "<image>\n" else ""
-            val formattedPrompt = "<start_of_turn>user\nYou are a helpful medical assistant.\n$imageMarker$text<end_of_turn>\n<start_of_turn>model\n"
-            
-            android.util.Log.d("ChatViewModel", "Formatted Prompt:\n$formattedPrompt")
-
+            val prompt = "<start_of_turn>user\nYou are a helpful medical assistant.\n$imageMarker$text<end_of_turn>\n<start_of_turn>model\n"
             var fullResponse = ""
             var fullThought = ""
             var isThinking = false
-
-            ggufManager.generateStream(formattedPrompt, imageBytes).collect { token ->
+            ggufManager.generateStream(prompt, imageBytes).collect { token ->
                 when {
-                    token.startsWith("Error: ") -> {
-                        _uiState.value = ChatUiState.Error(token.removePrefix("Error: "))
-                    }
-                    token.startsWith("[STATS] ") -> {
-                        val stats = token.removePrefix("[STATS] ")
-                        _messages[assistantIndex] = assistantMessage.copy(
-                            content = fullResponse, 
-                            thought = if (fullThought.isNotBlank()) fullThought else null,
-                            stats = stats
-                        )
-                    }
-                    token == "[THOUGHT_START]" -> {
-                        isThinking = true
-                    }
-                    token == "[THOUGHT_END]" -> {
-                        isThinking = false
-                    }
+                    token.startsWith("Error: ") -> _uiState.value = ChatUiState.Error(token)
+                    token.startsWith("[STATS] ") -> _messages[assistantIndex] = assistantMessage.copy(content = fullResponse, thought = fullThought.ifBlank { null }, stats = token.removePrefix("[STATS] "))
+                    token == "[THOUGHT_START]" -> isThinking = true
+                    token == "[THOUGHT_END]" -> isThinking = false
                     else -> {
-                        if (isThinking) {
-                            fullThought += token
-                        } else {
-                            fullResponse += token
-                        }
-                        
-                        // Update the message in the list to trigger recomposition
-                        if (assistantIndex >= 0 && assistantIndex < _messages.size) {
-                            try {
-                                _messages[assistantIndex] = assistantMessage.copy(
-                                    content = fullResponse,
-                                    thought = if (fullThought.isNotBlank()) fullThought else null
-                                )
-                            } catch (e: Exception) {
-                                // Ignore concurrent modification issues during streaming
-                            }
-                        }
+                        if (isThinking) fullThought += token else fullResponse += token
+                        if (assistantIndex >= 0) _messages[assistantIndex] = assistantMessage.copy(content = fullResponse, thought = fullThought.ifBlank { null })
                     }
                 }
-                
-                // Once we start getting tokens, we are no longer "Loading"
-                if (_uiState.value is ChatUiState.Loading) {
-                    _uiState.value = ChatUiState.Idle
-                }
+                if (_uiState.value is ChatUiState.Loading) _uiState.value = ChatUiState.Idle
             }
-            
+            _isGenerating.value = false
             _uiState.value = ChatUiState.Idle
         }
     }
