@@ -25,7 +25,7 @@ sealed class ChatUiState {
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
-    private val ggufManager = GgufInferenceManager()
+    private val ggufManager = GgufInferenceManager(application)
     val modelManager = ModelManager(application)
     private val _messages = mutableStateListOf<ChatMessage>()
     val messages: List<ChatMessage> = _messages
@@ -33,8 +33,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val uiState = _uiState.asStateFlow()
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating = _isGenerating.asStateFlow()
+    private var isNewConversation = true
 
-    init { checkModelStatus() }
+    init {
+        checkModelStatus()
+        maybeAutoLoadEngine()
+    }
 
     fun stopGeneration() {
         ggufManager.stopGeneration()
@@ -43,6 +47,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearMessages() {
         _messages.clear()
+        isNewConversation = true
+        if (ggufManager.isInitialized) ggufManager.resetContext()
     }
 
     fun checkModelStatus() {
@@ -55,14 +61,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun maybeAutoLoadEngine() {
+        viewModelScope.launch {
+            val llmPath = modelManager.getDownloadedLlmPath()
+            val mmprojPath = modelManager.getDownloadedMmprojPath()
+            if (llmPath != null && mmprojPath != null && !ggufManager.isInitialized) {
+                initializeEngine()
+            }
+        }
+    }
+
     fun initializeEngine() {
         viewModelScope.launch {
             val llmPath = modelManager.getDownloadedLlmPath()
             val mmprojPath = modelManager.getDownloadedMmprojPath()
             if (llmPath == null || mmprojPath == null) return@launch
-            _uiState.value = ChatUiState.Loading("Initializing...")
+            _uiState.value = ChatUiState.Loading("Initializing engine...")
+            android.util.Log.i("ChatViewModel", "Loading model: $llmPath")
             val result = ggufManager.initialize(llmPath, mmprojPath)
-            _uiState.value = if (result.isSuccess) ChatUiState.Idle else ChatUiState.Error("Init failed")
+            android.util.Log.i("ChatViewModel", "Init result: ${if (result.isSuccess) "OK" else result.exceptionOrNull()?.message}")
+            _uiState.value = if (result.isSuccess) ChatUiState.Idle else ChatUiState.Error("Init failed: ${result.exceptionOrNull()?.message}")
         }
     }
 
@@ -70,33 +88,46 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             modelManager.downloadModel(model)
             checkModelStatus()
+            maybeAutoLoadEngine()
         }
     }
 
     fun sendMessage(text: String, imageBytes: ByteArray? = null, imageUri: android.net.Uri? = null) {
         if (text.isBlank() && imageBytes == null) return
         if (!ggufManager.isInitialized) return
+
         _messages.add(ChatMessage(text, isUser = true, imageUri = imageUri))
+
         viewModelScope.launch {
             _isGenerating.value = true
             _uiState.value = ChatUiState.Loading("Thinking...")
             val assistantMessage = ChatMessage("", isUser = false)
             _messages.add(assistantMessage)
             val assistantIndex = _messages.size - 1
-            val imageMarker = if (imageBytes != null) "<image>\n" else ""
-            val prompt = "<start_of_turn>user\nYou are a helpful medical assistant.\n$imageMarker$text<end_of_turn>\n<start_of_turn>model\n"
+
+            // Full conversation history is embedded in the prompt; native side clears KV each turn.
+            val prompt = buildConversationPrompt()
+            isNewConversation = false
             var fullResponse = ""
             var fullThought = ""
             var isThinking = false
-            ggufManager.generateStream(prompt, imageBytes).collect { token ->
+
+            ggufManager.generateStream(prompt, imageBytes, clearContext = true).collect { token ->
                 when {
-                    token.startsWith("Error: ") -> _uiState.value = ChatUiState.Error(token)
-                    token.startsWith("[STATS] ") -> _messages[assistantIndex] = assistantMessage.copy(content = fullResponse, thought = fullThought.ifBlank { null }, stats = token.removePrefix("[STATS] "))
+                    token.startsWith("Error: ") -> _uiState.value = ChatUiState.Error(token.removePrefix("Error: "))
+                    token.startsWith("[STATS] ") -> _messages[assistantIndex] = assistantMessage.copy(
+                        content = fullResponse,
+                        thought = fullThought.ifBlank { null },
+                        stats = token.removePrefix("[STATS] ")
+                    )
                     token == "[THOUGHT_START]" -> isThinking = true
                     token == "[THOUGHT_END]" -> isThinking = false
                     else -> {
                         if (isThinking) fullThought += token else fullResponse += token
-                        if (assistantIndex >= 0) _messages[assistantIndex] = assistantMessage.copy(content = fullResponse, thought = fullThought.ifBlank { null })
+                        _messages[assistantIndex] = assistantMessage.copy(
+                            content = fullResponse,
+                            thought = fullThought.ifBlank { null }
+                        )
                     }
                 }
                 if (_uiState.value is ChatUiState.Loading) _uiState.value = ChatUiState.Idle
@@ -104,5 +135,40 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _isGenerating.value = false
             _uiState.value = ChatUiState.Idle
         }
+    }
+
+    private fun buildConversationPrompt(): String {
+        val sb = StringBuilder()
+        // Exclude the empty assistant placeholder added for streaming UI updates.
+        val history = _messages.dropLast(1)
+        var firstUserTurn = true
+
+        for (msg in history) {
+            if (msg.isUser) {
+                sb.append("<start_of_turn>user\n")
+                if (firstUserTurn) {
+                    sb.append(SYSTEM_PREFIX).append("\n\n")
+                    firstUserTurn = false
+                }
+                if (msg.imageUri != null) {
+                    sb.append("<start_of_image>\n")
+                }
+                sb.append(msg.content.trim())
+                sb.append("<end_of_turn>\n")
+            } else if (msg.content.isNotBlank()) {
+                sb.append("<start_of_turn>model\n")
+                sb.append(msg.content.trim())
+                sb.append("<end_of_turn>\n")
+            }
+        }
+
+        sb.append("<start_of_turn>model\n")
+        return sb.toString()
+    }
+
+    companion object {
+        // Gemma/MedGemma: no system role — prefix is merged into the first user turn (see unsloth chat_template.jinja).
+        private const val SYSTEM_PREFIX =
+            "You are a helpful medical assistant. This is not medical advice — always consult a healthcare professional."
     }
 }

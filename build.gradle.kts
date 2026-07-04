@@ -23,8 +23,13 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags("-std=c++17")
-                arguments("-DGGML_NEON=ON", "-DCMAKE_C_FLAGS=-march=armv8.4-a+dotprod+i8mm", "-DCMAKE_CXX_FLAGS=-march=armv8.4-a+dotprod+i8mm")
+                cppFlags("-std=c++17", "-O3")
+                arguments(
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DGGML_NEON=ON",
+                    "-DCMAKE_C_FLAGS=-march=armv8.4-a+dotprod+i8mm",
+                    "-DCMAKE_CXX_FLAGS=-march=armv8.4-a+dotprod+i8mm"
+                )
                 abiFilters("arm64-v8a")
             }
         }
@@ -84,8 +89,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("io.coil-kt:coil-compose:2.6.0")
-    
-    // Removed MediaPipe as we now use native llama.cpp
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

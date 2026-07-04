@@ -1,5 +1,6 @@
 #include "hf-cache.h"
 
+#include "build-info.h"
 #include "common.h"
 #include "log.h"
 #include "http.h"
@@ -10,7 +11,6 @@
 #include <filesystem>
 #include <fstream>
 #include <atomic>
-#include <regex> // migration only
 #include <string>
 #include <string_view>
 #include <stdexcept>
@@ -26,6 +26,8 @@ namespace nl = nlohmann;
 #include <windows.h>
 #else
 #define HOME_DIR "HOME"
+#include <unistd.h>
+#include <pwd.h>
 #endif
 
 namespace hf_cache {
@@ -38,6 +40,7 @@ static fs::path get_cache_directory() {
             const char * var;
             fs::path path;
         } entries[] = {
+            {"LLAMA_CACHE",           fs::path()},
             {"HF_HUB_CACHE",          fs::path()},
             {"HUGGINGFACE_HUB_CACHE", fs::path()},
             {"HF_HOME",               fs::path("hub")},
@@ -50,6 +53,13 @@ static fs::path get_cache_directory() {
                 return entry.path.empty() ? base : base / entry.path;
             }
         }
+#ifndef _WIN32
+        const struct passwd * pw = getpwuid(getuid());
+
+        if (pw && pw->pw_dir && *pw->pw_dir) {
+            return fs::path(pw->pw_dir) / ".cache" / "huggingface" / "hub";
+        }
+#endif
         throw std::runtime_error("Failed to determine HF cache directory");
     }();
 
@@ -190,7 +200,7 @@ static nl::json api_get(const std::string & url,
     auto [cli, parts] = common_http_client(url);
 
     httplib::Headers headers = {
-        {"User-Agent", "llama-cpp/" + build_info},
+        {"User-Agent", "llama-cpp/" + std::string(llama_build_info())},
         {"Accept", "application/json"}
     };
 
@@ -219,7 +229,7 @@ static nl::json api_get(const std::string & url,
 static std::string get_repo_commit(const std::string & repo_id,
                                    const std::string & token) {
     try {
-        auto endpoint = get_model_endpoint();
+        auto endpoint = common_get_model_endpoint();
         auto json = api_get(endpoint + "api/models/" + repo_id + "/refs", token);
 
         if (!json.is_object() ||
@@ -297,7 +307,7 @@ hf_files get_repo_files(const std::string & repo_id,
     hf_files files;
 
     try {
-        auto endpoint = get_model_endpoint();
+        auto endpoint = common_get_model_endpoint();
         auto json = api_get(endpoint + "api/models/" + repo_id + "/tree/" + commit + "?recursive=true", token);
 
         if (!json.is_array()) {
@@ -485,160 +495,19 @@ std::string finalize_file(const hf_file & file) {
     return file.final_path;
 }
 
-// delete everything after this line, one day
-
-static std::pair<std::string, std::string> parse_manifest_name(std::string & filename) {
-    static const std::regex re(R"(^manifest=([^=]+)=([^=]+)=.*\.json$)");
-    std::smatch match;
-    if (std::regex_match(filename, match, re)) {
-        return {match[1].str(), match[2].str()};
-    }
-    return {};
-}
-
-static std::string make_old_cache_filename(const std::string & owner,
-                                           const std::string & repo,
-                                           const std::string & filename) {
-    auto result = owner + "_" + repo + "_" + filename;
-    string_replace_all(result, "/", "_");
-    return result;
-}
-
-static bool migrate_single_file(const fs::path    & old_cache,
-                                const std::string & owner,
-                                const std::string & repo,
-                                const nl::json    & node,
-                                const hf_files    & files) {
-
-    if (!node.contains("rfilename") ||
-        !node.contains("lfs")       ||
-        !node["lfs"].contains("sha256")) {
+bool remove_cached_repo(const std::string & repo_id) {
+    if (!is_valid_repo_id(repo_id)) {
+        LOG_WRN("%s: invalid repository: %s\n", __func__, repo_id.c_str());
         return false;
     }
-
-    std::string path = node["rfilename"];
-    std::string sha256 = node["lfs"]["sha256"];
-
-    const hf_file * file_info = nullptr;
-    for (const auto & f : files) {
-        if (f.path == path) {
-            file_info = &f;
-            break;
-        }
-    }
-
-    std::string old_filename = make_old_cache_filename(owner, repo, path);
-    fs::path old_path = old_cache / old_filename;
-    fs::path etag_path = old_path.string() + ".etag";
-
-    if (!fs::exists(old_path)) {
-        if (fs::exists(etag_path)) {
-            LOG_WRN("%s: %s is orphan, deleting...\n", __func__, etag_path.string().c_str());
-            fs::remove(etag_path);
-        }
-        return false;
-    }
-
-    bool delete_old_path = false;
-
-    if (!file_info) {
-        LOG_WRN("%s: %s not found in current repo, deleting...\n", __func__, old_filename.c_str());
-        delete_old_path = true;
-    } else if (!sha256.empty() && !file_info->oid.empty() && sha256 != file_info->oid) {
-        LOG_WRN("%s: %s is not up to date (sha256 mismatch), deleting...\n", __func__, old_filename.c_str());
-        delete_old_path = true;
-    }
-
+    fs::path repo_path = get_repo_path(repo_id);
     std::error_code ec;
-
-    if (delete_old_path) {
-        fs::remove(old_path, ec);
-        fs::remove(etag_path, ec);
-        return true;
+    auto removed = fs::remove_all(repo_path, ec);
+    if (ec) {
+        LOG_ERR("%s: failed to remove repo cache %s: %s\n", __func__, repo_path.string().c_str(), ec.message().c_str());
+        return false;
     }
-
-    fs::path new_path(file_info->local_path);
-    fs::create_directories(new_path.parent_path(), ec);
-
-    if (!fs::exists(new_path, ec)) {
-        fs::rename(old_path, new_path, ec);
-        if (ec) {
-            fs::copy_file(old_path, new_path, ec);
-            if (ec) {
-                LOG_WRN("%s: failed to move/copy %s: %s\n", __func__, old_path.string().c_str(), ec.message().c_str());
-                return false;
-            }
-        }
-        fs::remove(old_path, ec);
-    }
-    fs::remove(etag_path, ec);
-
-    std::string filename = finalize_file(*file_info);
-    LOG_INF("%s: migrated %s -> %s\n", __func__, old_filename.c_str(), filename.c_str());
-
-    return true;
-}
-
-void migrate_old_cache_to_hf_cache(const std::string & token, bool offline) {
-    fs::path old_cache = fs_get_cache_directory();
-    if (!fs::exists(old_cache)) {
-        return;
-    }
-
-    if (offline) {
-        LOG_WRN("%s: skipping migration in offline mode (will run when online)\n", __func__);
-        return; // -hf is not going to work
-    }
-
-    bool warned = false;
-
-    for (const auto & entry : fs::directory_iterator(old_cache)) {
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        auto filename = entry.path().filename().string();
-        auto [owner, repo] = parse_manifest_name(filename);
-
-        if (owner.empty() || repo.empty()) {
-            continue;
-        }
-
-        if (!warned) {
-            warned = true;
-            LOG_WRN("================================================================================\n"
-                    "WARNING: Migrating cache to HuggingFace cache directory\n"
-                    "  Old cache: %s\n"
-                    "  New cache: %s\n"
-                    "This one-time migration moves models previously downloaded with -hf\n"
-                    "from the legacy llama.cpp cache to the standard HuggingFace cache.\n"
-                    "Models downloaded with --model-url are not affected.\n"
-                    "================================================================================\n",
-                    old_cache.string().c_str(), get_cache_directory().string().c_str());
-        }
-
-        auto repo_id = owner + "/" + repo;
-        auto files = get_repo_files(repo_id, token);
-
-        if (files.empty()) {
-            LOG_WRN("%s: could not get repo files for %s, skipping\n", __func__, repo_id.c_str());
-            continue;
-        }
-
-        try {
-            std::ifstream manifest(entry.path());
-            auto json = nl::json::parse(manifest);
-
-            for (const char * key : {"ggufFile", "mmprojFile"}) {
-                if (json.contains(key)) {
-                    migrate_single_file(old_cache, owner, repo, json[key], files);
-                }
-            }
-        } catch (const std::exception & e) {
-            LOG_WRN("%s: failed to parse manifest %s: %s\n", __func__, filename.c_str(), e.what());
-            continue;
-        }
-        fs::remove(entry.path());
-    }
+    return removed > 0;
 }
 
 } // namespace hf_cache

@@ -1,6 +1,6 @@
 package com.example.medgemma
 
-import android.util.Log
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -8,9 +8,8 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class GgufInferenceManager {
+class GgufInferenceManager(private val context: Context) {
     companion object {
-        private const val TAG = "GgufInference"
         init {
             System.loadLibrary("medgemma-native")
         }
@@ -27,8 +26,12 @@ class GgufInferenceManager {
         try {
             if (!File(modelPath).exists()) return@withContext Result.failure(Exception("Model file not found"))
             if (!File(mmprojPath).exists()) return@withContext Result.failure(Exception("mmproj file not found"))
-            if (isInitialized) { deinitNative(); isInitialized = false }
-            val status = initNative(modelPath, mmprojPath)
+            if (isInitialized) {
+                deinitNative()
+                isInitialized = false
+            }
+            val nativeLibDir = context.applicationInfo.nativeLibraryDir
+            val status = initNative(nativeLibDir, modelPath, mmprojPath)
             if (status == 0) {
                 isInitialized = true
                 Result.success(Unit)
@@ -41,14 +44,25 @@ class GgufInferenceManager {
     }
 
     fun deinitialize() {
-        if (isInitialized) { deinitNative(); isInitialized = false }
+        if (isInitialized) {
+            deinitNative()
+            isInitialized = false
+        }
+    }
+
+    fun resetContext() {
+        if (isInitialized) resetContextNative()
     }
 
     fun stopGeneration() {
         if (isInitialized) stopNative()
     }
 
-    fun generateStream(prompt: String, imageBytes: ByteArray? = null): Flow<String> = callbackFlow {
+    fun generateStream(
+        prompt: String,
+        imageBytes: ByteArray? = null,
+        clearContext: Boolean = false
+    ): Flow<String> = callbackFlow {
         if (!isInitialized) {
             trySend("Error: GGUF Engine not initialized")
             close()
@@ -60,14 +74,20 @@ class GgufInferenceManager {
             }
         }
         withContext(Dispatchers.IO) {
-            generateNative(prompt, imageBytes, callback)
+            generateNative(prompt, imageBytes, clearContext, callback)
         }
         close()
         awaitClose { }
     }
 
-    private external fun initNative(modelPath: String, mmprojPath: String): Int
+    private external fun initNative(nativeLibDir: String, modelPath: String, mmprojPath: String): Int
     private external fun deinitNative()
+    private external fun resetContextNative()
     private external fun stopNative()
-    private external fun generateNative(prompt: String, imageBytes: ByteArray?, callback: InferenceCallback)
+    private external fun generateNative(
+        prompt: String,
+        imageBytes: ByteArray?,
+        clearContext: Boolean,
+        callback: InferenceCallback
+    )
 }
