@@ -16,7 +16,8 @@ data class GgufModel(
     val name: String,
     val url: String,
     val fileName: String,
-    val type: ModelType
+    val type: ModelType,
+    val sizeLabel: String = ""
 )
 
 enum class ModelType {
@@ -44,25 +45,49 @@ class ModelManager(private val context: Context) {
 
     val availableLlmModels = listOf(
         GgufModel(
+            "MedGemma 1.5 TQ3 TurboQuant",
+            "https://huggingface.co/unsloth/medgemma-1.5-4b-it-GGUF/resolve/main/medgemma-1.5-4b-it-UD-TQ3_0.gguf?download=true",
+            "medgemma-1.5-4b-it-UD-TQ3_0.gguf",
+            ModelType.LLM,
+            "~1.5 GB"
+        ),
+        GgufModel(
+            "MedGemma 1.5 Q6_K_XL",
+            "https://huggingface.co/unsloth/medgemma-1.5-4b-it-GGUF/resolve/main/medgemma-1.5-4b-it-UD-Q6_K_XL.gguf?download=true",
+            "medgemma-1.5-4b-it-UD-Q6_K_XL.gguf",
+            ModelType.LLM,
+            "~3.2 GB"
+        ),
+        GgufModel(
             "MedGemma o1 Q6_K",
             "https://huggingface.co/vyyyyyyy/medgemma-4b-o1-reasoning-gguf/resolve/main/medgemma-o1-q6_k.gguf?download=true",
             "medgemma-o1-q6_k.gguf",
-            ModelType.LLM
+            ModelType.LLM,
+            "~3.4 GB"
         ),
         GgufModel(
             "MedGemma o1 Q4_K_M",
             "https://huggingface.co/vyyyyyyy/medgemma-4b-o1-reasoning-gguf/resolve/main/medgemma-o1-q4_k_m.gguf?download=true",
             "medgemma-o1-q4_k_m.gguf",
-            ModelType.LLM
+            ModelType.LLM,
+            "~2.3 GB"
         )
     )
 
     val availableMmprojModels = listOf(
         GgufModel(
+            "mmproj F16 (recommended)",
+            "https://huggingface.co/unsloth/medgemma-1.5-4b-it-GGUF/resolve/main/mmproj-F16.gguf?download=true",
+            "mmproj-F16.gguf",
+            ModelType.MMPROJ,
+            "~681 MB"
+        ),
+        GgufModel(
             "mmproj Q8_0",
             "https://huggingface.co/vyyyyyyy/medgemma-1.5-4b-it-vision-GGUF/resolve/main/mmproj-Q8_0.gguf?download=true",
             "mmproj-Q8_0.gguf",
-            ModelType.MMPROJ
+            ModelType.MMPROJ,
+            "~681 MB"
         ),
         GgufModel(
             "mmproj Q6_K",

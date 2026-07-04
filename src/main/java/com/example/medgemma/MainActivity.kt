@@ -256,7 +256,11 @@ fun ModelItem(model: GgufModel, isDownloaded: Boolean, downloadProgress: Downloa
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = if (isDownloaded) Color(0xFF1A1A1A) else Color(0xFF0A0A0A)), border = if (isDownloaded) androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)) else null) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text(model.name, fontWeight = FontWeight.Bold, color = Color.White); Text(model.fileName, style = MaterialTheme.typography.labelSmall, color = Color.Gray) }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(model.name, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(model.fileName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    if (model.sizeLabel.isNotBlank()) Text(model.sizeLabel, style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                }
                 if (isDownloaded) Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
                 else if (isDownloading) CircularProgressIndicator(progress = downloadProgress?.progress ?: 0f, modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
                 else IconButton(onClick = onDownload, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Download, contentDescription = null, tint = Color.Gray) }
