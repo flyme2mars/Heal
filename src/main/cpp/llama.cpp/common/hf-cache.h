@@ -29,7 +29,7 @@ hf_files get_cached_files(const std::string & repo_id = {});
 // Create snapshot path (link or move/copy) and return it
 std::string finalize_file(const hf_file & file);
 
-// TODO: Remove later
-void migrate_old_cache_to_hf_cache(const std::string & token, bool offline = false);
+// Remove the entire cached directory for a repo, returns true if removed
+bool remove_cached_repo(const std::string & repo_id);
 
 } // namespace hf_cache
