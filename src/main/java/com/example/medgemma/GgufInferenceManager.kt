@@ -2,9 +2,12 @@ package com.example.medgemma
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.consumeAsFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -68,16 +71,29 @@ class GgufInferenceManager(private val context: Context) {
             close()
             return@callbackFlow
         }
+        val tokenChannel = Channel<String>(Channel.UNLIMITED)
         val callback = object : InferenceCallback {
             override fun onToken(token: String) {
-                trySend(token)
+                tokenChannel.trySend(token)
             }
         }
-        withContext(Dispatchers.IO) {
-            generateNative(prompt, imageBytes, clearContext, callback)
+        val generationJob = launch(Dispatchers.IO) {
+            try {
+                generateNative(prompt, imageBytes, clearContext, callback)
+            } finally {
+                tokenChannel.close()
+            }
         }
+        tokenChannel.consumeAsFlow().collect { token ->
+            trySend(token)
+        }
+        generationJob.join()
         close()
-        awaitClose { }
+        awaitClose {
+            stopGeneration()
+            generationJob.cancel()
+            tokenChannel.close()
+        }
     }
 
     private external fun initNative(nativeLibDir: String, modelPath: String, mmprojPath: String): Int
