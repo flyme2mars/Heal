@@ -7,18 +7,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(LLAMA_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp)
 
-# Android arm64: KleidiAI + I8MM dotprod (llama.android reference)
+# Android arm64: I8MM dotprod (KleidiAI disabled — faster on this device without REPACK)
 if(ANDROID_ABI STREQUAL "arm64-v8a")
-    set(GGML_CPU_KLEIDIAI ON CACHE BOOL "Enable KleidiAI" FORCE)
+    set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "Disable KleidiAI" FORCE)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8.4-a+dotprod+i8mm")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.4-a+dotprod+i8mm")
 endif()
 
 set(GGML_VULKAN OFF CACHE BOOL "Disable Vulkan" FORCE)
 set(GGML_OPENCL OFF CACHE BOOL "Disable OpenCL" FORCE)
-set(GGML_OPENMP ON CACHE BOOL "Enable OpenMP for CPU matmul" FORCE)
+# llama.cpp already parallelizes via pthreads; OpenMP ON oversubscribes 4 perf cores
+set(GGML_OPENMP OFF CACHE BOOL "Disable OpenMP (use llama thread pool)" FORCE)
 set(GGML_I8MM ON CACHE BOOL "Enable I8MM" FORCE)
-# REPACK duplicates the model in RAM (~2.3GB extra) and slows decode on mobile
+# REPACK adds ~2.3GB RAM and regressed decode to ~5.7 t/s on device
 set(GGML_CPU_REPACK OFF CACHE BOOL "Disable runtime weight repack" FORCE)
 
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "Skip common lib (not needed)" FORCE)

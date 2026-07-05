@@ -33,7 +33,6 @@ static constexpr int DEFAULT_CONTEXT_SIZE = 2048;
 static constexpr int DEFAULT_BATCH_SIZE = 512;
 static constexpr int DEFAULT_MAX_TOKENS = 512;
 static constexpr int MAX_THOUGHT_TOKENS = 128;
-static constexpr int TOKEN_CALLBACK_BATCH = 6;
 
 static void android_log_callback(ggml_log_level level, const char * text, void * user_data) {
     (void) user_data;
@@ -129,10 +128,10 @@ Java_com_example_medgemma_GgufInferenceManager_initNative(
     cparams.n_threads_batch = N_THREADS;
     cparams.n_batch = DEFAULT_BATCH_SIZE;
     cparams.n_ubatch = DEFAULT_BATCH_SIZE;
-    // F16 KV is faster on decode than Q8_0 (no per-token dequant in attention)
     cparams.type_k = GGML_TYPE_F16;
     cparams.type_v = GGML_TYPE_F16;
     cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    cparams.no_perf = false;
     g_context = llama_init_from_model(g_model, cparams);
     if (!g_context) {
         LOGE("Failed to initialize llama context");
@@ -260,78 +259,29 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(
     int n_decode = 0;
     int n_thought = 0;
     bool in_thought = false;
-    int batch_count = 0;
-    std::string pending_out;
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
+    llama_perf_context_reset(g_context);
     llama_batch batch = llama_batch_init(1, 0, 1);
 
-    auto flush_pending = [&]() {
-        if (pending_out.empty()) return;
-        jstring jpiece = env->NewStringUTF(pending_out.c_str());
+    auto emit_token = [&](const std::string & s_piece) {
+        jstring jpiece = env->NewStringUTF(s_piece.c_str());
         env->CallVoidMethod(callback, onTokenMethod, jpiece);
         env->DeleteLocalRef(jpiece);
-        pending_out.clear();
-        batch_count = 0;
-    };
-
-    auto emit_token = [&](const std::string & s_piece, bool force_flush) {
-        if (s_piece == "[THOUGHT_START]") {
-            flush_pending();
-            in_thought = true;
-            n_thought = 0;
-            jstring jpiece = env->NewStringUTF(s_piece.c_str());
-            env->CallVoidMethod(callback, onTokenMethod, jpiece);
-            env->DeleteLocalRef(jpiece);
-            return;
-        }
-        if (s_piece == "[THOUGHT_END]") {
-            flush_pending();
-            in_thought = false;
-            n_thought = 0;
-            jstring jpiece = env->NewStringUTF(s_piece.c_str());
-            env->CallVoidMethod(callback, onTokenMethod, jpiece);
-            env->DeleteLocalRef(jpiece);
-            return;
-        }
-        pending_out += s_piece;
-        batch_count++;
-        if (force_flush || batch_count >= TOKEN_CALLBACK_BATCH) {
-            flush_pending();
-        }
     };
 
     while (n_decode < DEFAULT_MAX_TOKENS) {
         if (g_stop_generation) break;
         if (in_thought && n_thought >= MAX_THOUGHT_TOKENS) {
-            flush_pending();
             in_thought = false;
             n_thought = 0;
-            jstring jend = env->NewStringUTF("[THOUGHT_END]");
-            env->CallVoidMethod(callback, onTokenMethod, jend);
-            env->DeleteLocalRef(jend);
+            emit_token("[THOUGHT_END]");
         }
 
         llama_token id = llama_sampler_sample(g_sampler, g_context, -1);
         llama_sampler_accept(g_sampler, id);
 
         if (llama_vocab_is_eog(vocab, id)) break;
-
-        char piece[128];
-        int n = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, true);
-        if (n > 0) {
-            std::string s_piece(piece, (size_t) n);
-            if (s_piece.find("<unused94>") != std::string::npos) {
-                emit_token("[THOUGHT_START]", true);
-            } else if (s_piece.find("<unused95>") != std::string::npos) {
-                emit_token("[THOUGHT_END]", true);
-            } else if (s_piece.find("<unused") != std::string::npos) {
-                if (in_thought) n_thought++;
-            } else {
-                emit_token(s_piece, false);
-                if (in_thought) n_thought++;
-            }
-        }
 
         batch.n_tokens = 1;
         batch.token[0] = id;
@@ -342,15 +292,41 @@ Java_com_example_medgemma_GgufInferenceManager_generateNative(
         if (llama_decode(g_context, batch) != 0) break;
         n_past++;
         n_decode++;
-    }
 
-    flush_pending();
+        char piece[128];
+        int n = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, true);
+        if (n <= 0) continue;
+
+        std::string s_piece(piece, (size_t) n);
+        if (s_piece.find("<unused94>") != std::string::npos) {
+            in_thought = true;
+            n_thought = 0;
+            emit_token("[THOUGHT_START]");
+        } else if (s_piece.find("<unused95>") != std::string::npos) {
+            in_thought = false;
+            n_thought = 0;
+            emit_token("[THOUGHT_END]");
+        } else if (s_piece.find("<unused") != std::string::npos) {
+            if (in_thought) n_thought++;
+        } else {
+            emit_token(s_piece);
+            if (in_thought) n_thought++;
+        }
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &t_end);
     double total_time = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
-    double speed = total_time > 0 ? n_decode / total_time : 0.0;
-    char stats_buf[128];
-    snprintf(stats_buf, sizeof(stats_buf), "[STATS] %d tokens • %.2fs • %.2f t/s", n_decode, total_time, speed);
+    double wall_tps = total_time > 0 ? n_decode / total_time : 0.0;
+
+    const llama_perf_context_data perf = llama_perf_context(g_context);
+    double native_tps = perf.t_eval_ms > 0.0
+            ? perf.n_eval * 1000.0 / perf.t_eval_ms
+            : 0.0;
+
+    char stats_buf[192];
+    snprintf(stats_buf, sizeof(stats_buf),
+             "[STATS] %d tokens • %.2fs • %.2f t/s (native %.2f t/s)",
+             n_decode, total_time, wall_tps, native_tps);
     LOGI("%s", stats_buf);
     jstring jstats = env->NewStringUTF(stats_buf);
     env->CallVoidMethod(callback, onTokenMethod, jstats);
