@@ -4,9 +4,16 @@ import android.app.Application
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+data class SnackbarMessage(
+    val text: String,
+    val isError: Boolean = false
+)
 
 data class ChatMessage(
     val content: String,
@@ -33,6 +40,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val uiState = _uiState.asStateFlow()
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating = _isGenerating.asStateFlow()
+    private val _snackbar = MutableSharedFlow<SnackbarMessage>()
+    val snackbar = _snackbar.asSharedFlow()
     private var isNewConversation = true
 
     init {
@@ -76,11 +85,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val llmPath = modelManager.getDownloadedLlmPath()
             val mmprojPath = modelManager.getDownloadedMmprojPath()
             if (llmPath == null || mmprojPath == null) return@launch
-            _uiState.value = ChatUiState.Loading("Initializing engine...")
+            _uiState.value = ChatUiState.Loading("Loading model weights…")
             android.util.Log.i("ChatViewModel", "Loading model: $llmPath")
             val result = ggufManager.initialize(llmPath, mmprojPath)
             android.util.Log.i("ChatViewModel", "Init result: ${if (result.isSuccess) "OK" else result.exceptionOrNull()?.message}")
-            _uiState.value = if (result.isSuccess) ChatUiState.Idle else ChatUiState.Error("Init failed: ${result.exceptionOrNull()?.message}")
+            if (result.isSuccess) {
+                _uiState.value = ChatUiState.Idle
+                _snackbar.emit(SnackbarMessage("Model loaded — you're ready to chat"))
+            } else {
+                val error = "Init failed: ${result.exceptionOrNull()?.message}"
+                _uiState.value = ChatUiState.Error(error)
+                _snackbar.emit(SnackbarMessage(error, isError = true))
+            }
         }
     }
 
@@ -100,7 +116,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             _isGenerating.value = true
-            _uiState.value = ChatUiState.Loading("Thinking...")
+            _uiState.value = ChatUiState.Loading(
+                if (imageBytes != null) "Analyzing image…" else "Thinking…"
+            )
             val assistantMessage = ChatMessage("", isUser = false)
             _messages.add(assistantMessage)
             val assistantIndex = _messages.size - 1
