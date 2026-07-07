@@ -48,8 +48,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import com.example.medgemma.ui.components.frostedGlassBar
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
+import dev.chrisbanes.haze.rememberHazeState
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -117,7 +123,7 @@ fun HeartbeatIndicator() {
         modifier = Modifier.size(18.dp).graphicsLayer { scaleX = scale; scaleY = scale })
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
 fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     val context = LocalContext.current
@@ -136,6 +142,10 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     val isGenerating by viewModel.isGenerating.collectAsState()
     val listState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val hazeState = rememberHazeState()
+    val density = LocalDensity.current
+    var topBarHeightPx by remember { mutableIntStateOf(0) }
+    var bottomBarHeightPx by remember { mutableIntStateOf(0) }
     val isInputEnabled = uiState is ChatUiState.Idle && !isGenerating
     var autoScrollEnabled by remember { mutableStateOf(true) }
 
@@ -248,18 +258,94 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
         )
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            Column(
-                modifier = Modifier
-                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.92f))
-                    .statusBarsPadding()
-            ) {
-                CenterAlignedTopAppBar(
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeSource(state = hazeState),
+            state = listState,
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = with(density) { topBarHeightPx.toDp() } + 20.dp,
+                bottom = with(density) { bottomBarHeightPx.toDp() } + 20.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            itemsIndexed(messages) { index, message ->
+                ChatMessageItem(
+                    message = message,
+                    isStreaming = isGenerating &&
+                        index == messages.lastIndex &&
+                        !message.isUser &&
+                        message.stats == null
+                )
+            }
+            if (uiState is ChatUiState.Idle && messages.isEmpty()) {
+                item {
+                    ConversationStarters(
+                        enabled = isInputEnabled,
+                        onStarterSelected = { starter ->
+                            if (starter.withImage) {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                            inputText = starter.prompt
+                        }
+                    )
+                }
+            }
+            if (uiState is ChatUiState.Loading && messages.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                        TypingIndicator(
+                            message = (uiState as ChatUiState.Loading).message,
+                            subtitle = "This may take a minute on first launch"
+                        )
+                    }
+                }
+            }
+            if (uiState is ChatUiState.Error) {
+                item { ErrorState((uiState as ChatUiState.Error).message) { showModelSheet = true } }
+            }
+            if (uiState is ChatUiState.NoModel) {
+                item {
+                    EmptyState(
+                        icon = Icons.Default.Download,
+                        title = "Model required",
+                        subtitle = "Download a model to begin chatting.",
+                        actionText = "Open models",
+                        onAction = { showModelSheet = true }
+                    )
+                }
+            }
+            if (uiState is ChatUiState.ModelAvailable) {
+                item {
+                    EmptyState(
+                        icon = Icons.Default.CheckCircle,
+                        title = "Ready to start",
+                        subtitle = "Models are downloaded. Load them into memory to chat.",
+                        actionText = "Load model",
+                        onAction = { viewModel.initializeEngine() }
+                    )
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .onSizeChanged { topBarHeightPx = it.height }
+                .frostedGlassBar(hazeState)
+                .statusBarsPadding()
+        ) {
+            CenterAlignedTopAppBar(
                     navigationIcon = {
                         IconButton(onClick = { showModelSheet = true }, enabled = !isGenerating) {
                             Icon(
@@ -321,19 +407,24 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                         titleContentColor = MaterialTheme.colorScheme.onBackground
                     )
                 )
-                HorizontalDivider(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
-                )
-            }
-        },
-        bottomBar = {
-            Surface(
-                color = MaterialTheme.colorScheme.background,
-                modifier = Modifier.imePadding().navigationBarsPadding()
-            ) {
-                Column {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            HorizontalDivider(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .onSizeChanged { bottomBarHeightPx = it.height }
+                .frostedGlassBar(hazeState)
+                .imePadding()
+                .navigationBarsPadding()
+        ) {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            )
                     AnimatedVisibility(visible = selectedImageUri != null) {
                         Box(
                             modifier = Modifier
@@ -456,101 +547,36 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                             )
                         }
                     }
-                }
-            }
-        },
-    ) { padding ->
-        Box(
+        }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
             modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .consumeWindowInsets(padding)
-        ) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                state = listState,
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-            itemsIndexed(messages) { index, message ->
-                ChatMessageItem(
-                    message = message,
-                    isStreaming = isGenerating &&
-                        index == messages.lastIndex &&
-                        !message.isUser &&
-                        message.stats == null
-                )
-            }
-            if (uiState is ChatUiState.Idle && messages.isEmpty()) {
-                item {
-                    ConversationStarters(
-                        enabled = isInputEnabled,
-                        onStarterSelected = { starter ->
-                            if (starter.withImage) {
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            }
-                            inputText = starter.prompt
-                        }
-                    )
-                }
-            }
-            if (uiState is ChatUiState.Loading && messages.isEmpty()) {
-                item {
-                    Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                        TypingIndicator(
-                            message = (uiState as ChatUiState.Loading).message,
-                            subtitle = "This may take a minute on first launch"
-                        )
+                .align(Alignment.BottomCenter)
+                .padding(bottom = with(density) { bottomBarHeightPx.toDp() })
+        )
+
+        if (!autoScrollEnabled && messages.isNotEmpty()) {
+            SmallFloatingActionButton(
+                onClick = {
+                    scope.launch {
+                        autoScrollEnabled = true
+                        listState.animateScrollToBottom(messages.lastIndex)
                     }
-                }
-            }
-            if (uiState is ChatUiState.Error) {
-                item { ErrorState((uiState as ChatUiState.Error).message) { showModelSheet = true } }
-            }
-            if (uiState is ChatUiState.NoModel) {
-                item {
-                    EmptyState(
-                        icon = Icons.Default.Download,
-                        title = "Model required",
-                        subtitle = "Download a model to begin chatting.",
-                        actionText = "Open models",
-                        onAction = { showModelSheet = true }
-                    )
-                }
-            }
-            if (uiState is ChatUiState.ModelAvailable) {
-                item {
-                    EmptyState(
-                        icon = Icons.Default.CheckCircle,
-                        title = "Ready to start",
-                        subtitle = "Models are downloaded. Load them into memory to chat.",
-                        actionText = "Load model",
-                        onAction = { viewModel.initializeEngine() }
-                    )
-                }
-            }
-            }
-            if (!autoScrollEnabled && messages.isNotEmpty()) {
-                SmallFloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            autoScrollEnabled = true
-                            listState.animateScrollToBottom(messages.lastIndex)
-                        }
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp),
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                ) {
-                    Icon(
-                        Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Scroll to latest message"
-                    )
-                }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(
+                        end = 16.dp,
+                        bottom = with(density) { bottomBarHeightPx.toDp() } + 16.dp
+                    ),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Scroll to latest message"
+                )
             }
         }
     }
