@@ -123,70 +123,39 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _messages.add(assistantMessage)
             val assistantIndex = _messages.size - 1
 
-            // Full conversation history is embedded in the prompt; native side clears KV each turn.
-            val prompt = buildConversationPrompt()
+            // Reuse native KV on continuation turns; only the new user turn is tokenized.
+            val plan = ChatPromptPolicy.planGeneration(
+                isNewConversation = isNewConversation,
+                userText = text,
+                hasImage = imageBytes != null || imageUri != null
+            )
             isNewConversation = false
-            var fullResponse = ""
-            var fullThought = ""
-            var isThinking = false
 
-            ggufManager.generateStream(prompt, imageBytes, clearContext = true).collect { token ->
-                when {
-                    token.startsWith("Error: ") -> _uiState.value = ChatUiState.Error(token.removePrefix("Error: "))
-                    token.startsWith("[STATS] ") -> _messages[assistantIndex] = assistantMessage.copy(
-                        content = fullResponse,
-                        thought = fullThought.ifBlank { null },
-                        stats = token.removePrefix("[STATS] ")
-                    )
-                    token == "[THOUGHT_START]" -> isThinking = true
-                    token == "[THOUGHT_END]" -> isThinking = false
-                    else -> {
-                        if (isThinking) fullThought += token else fullResponse += token
-                        _messages[assistantIndex] = assistantMessage.copy(
-                            content = fullResponse,
-                            thought = fullThought.ifBlank { null }
-                        )
+            val buffer = StreamContentBuffer()
+            fun applyUi(action: StreamContentBuffer.Action.UpdateUi) {
+                _messages[assistantIndex] = assistantMessage.copy(
+                    content = action.content,
+                    thought = action.thought,
+                    stats = action.stats
+                )
+            }
+
+            ggufManager.generateStream(plan.prompt, imageBytes, clearContext = plan.clearContext)
+                .collect { token ->
+                    when (val action = buffer.accept(token)) {
+                        is StreamContentBuffer.Action.Error ->
+                            _uiState.value = ChatUiState.Error(action.message)
+                        is StreamContentBuffer.Action.UpdateUi -> applyUi(action)
+                        StreamContentBuffer.Action.None -> Unit
                     }
+                    if (_uiState.value is ChatUiState.Loading) _uiState.value = ChatUiState.Idle
                 }
-                if (_uiState.value is ChatUiState.Loading) _uiState.value = ChatUiState.Idle
+            when (val final = buffer.finish()) {
+                is StreamContentBuffer.Action.UpdateUi -> applyUi(final)
+                else -> Unit
             }
             _isGenerating.value = false
             _uiState.value = ChatUiState.Idle
         }
-    }
-
-    private fun buildConversationPrompt(): String {
-        val sb = StringBuilder()
-        // Exclude the empty assistant placeholder added for streaming UI updates.
-        val history = _messages.dropLast(1)
-        var firstUserTurn = true
-
-        for (msg in history) {
-            if (msg.isUser) {
-                sb.append("<start_of_turn>user\n")
-                if (firstUserTurn) {
-                    sb.append(SYSTEM_PREFIX).append("\n\n")
-                    firstUserTurn = false
-                }
-                if (msg.imageUri != null) {
-                    sb.append("<start_of_image>\n")
-                }
-                sb.append(msg.content.trim())
-                sb.append("<end_of_turn>\n")
-            } else if (msg.content.isNotBlank()) {
-                sb.append("<start_of_turn>model\n")
-                sb.append(msg.content.trim())
-                sb.append("<end_of_turn>\n")
-            }
-        }
-
-        sb.append("<start_of_turn>model\n")
-        return sb.toString()
-    }
-
-    companion object {
-        // Gemma/MedGemma: no system role — prefix is merged into the first user turn (see unsloth chat_template.jinja).
-        private const val SYSTEM_PREFIX =
-            "You are a helpful medical assistant. This is not medical advice — always consult a healthcare professional."
     }
 }
