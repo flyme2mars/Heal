@@ -21,6 +21,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
@@ -148,6 +150,26 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
     val isInputEnabled = uiState is ChatUiState.Idle && !isGenerating
     var autoScrollEnabled by remember { mutableStateOf(true) }
+    // Prevent programmatic scroll animations from being treated as user flings
+    // (which would flip autoScrollEnabled back off mid-animation).
+    var programmaticScrollDepth by remember { mutableIntStateOf(0) }
+
+    suspend fun scrollChatToLatest(animated: Boolean) {
+        val index = messages.lastIndex
+        if (index < 0) return
+        programmaticScrollDepth++
+        try {
+            autoScrollEnabled = true
+            if (animated) {
+                listState.animateScrollToBottom(index)
+            } else {
+                listState.scrollChatToBottom(index)
+            }
+            autoScrollEnabled = true
+        } finally {
+            programmaticScrollDepth--
+        }
+    }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -176,19 +198,19 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
         snapshotFlow {
             val layoutInfo = listState.layoutInfo
             val nearBottom = layoutInfo.isNearBottom()
-            listState.isScrollInProgress to nearBottom
-        }.collect { (isScrolling, nearBottom) ->
+            Triple(listState.isScrollInProgress, nearBottom, programmaticScrollDepth)
+        }.collect { (isScrolling, nearBottom, progDepth) ->
             when {
                 nearBottom -> autoScrollEnabled = true
-                isScrolling -> autoScrollEnabled = false
+                // Only user-driven scrolls pin the list away from bottom.
+                isScrolling && progDepth == 0 -> autoScrollEnabled = false
             }
         }
     }
 
     LaunchedEffect(messages.size) {
         if (messages.isEmpty()) return@LaunchedEffect
-        autoScrollEnabled = true
-        listState.animateScrollToBottom(messages.lastIndex)
+        scrollChatToLatest(animated = true)
     }
 
     LaunchedEffect(isGenerating) {
@@ -199,7 +221,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             } ?: 0
         }.collect {
             if (autoScrollEnabled && messages.isNotEmpty()) {
-                listState.scrollChatToBottom(messages.lastIndex)
+                scrollChatToLatest(animated = false)
             }
         }
     }
@@ -560,8 +582,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             SmallFloatingActionButton(
                 onClick = {
                     scope.launch {
-                        autoScrollEnabled = true
-                        listState.animateScrollToBottom(messages.lastIndex)
+                        scrollChatToLatest(animated = true)
                     }
                 },
                 modifier = Modifier
@@ -942,18 +963,40 @@ private const val SCROLL_BOTTOM_THRESHOLD_PX = 96
 private fun LazyListLayoutInfo.isNearBottom(thresholdPx: Int = SCROLL_BOTTOM_THRESHOLD_PX): Boolean {
     if (totalItemsCount == 0) return true
     val lastVisible = visibleItemsInfo.lastOrNull() ?: return false
-    return lastVisible.index >= totalItemsCount - 1 &&
-        lastVisible.offset + lastVisible.size >= viewportEndOffset - thresholdPx
+    if (lastVisible.index < totalItemsCount - 1) return false
+    // Last item is visible: require its bottom edge to sit near the viewport end
+    // (handles tall streaming bubbles where only the top of the last item is on screen).
+    return lastVisible.offset + lastVisible.size >= viewportEndOffset - thresholdPx
 }
 
+/**
+ * Scroll so the end of [index] sits at the bottom of the viewport.
+ *
+ * [LazyListState.animateScrollToItem] alone only pins the *start* of the item;
+ * for a long assistant bubble that leaves the user stuck mid-message. After the
+ * item is brought into view we [animateScrollBy]/[scrollBy] any remaining gap.
+ */
 private suspend fun LazyListState.animateScrollToBottom(index: Int) {
     if (index < 0) return
-    animateScrollToItem(index, scrollOffset = Int.MAX_VALUE)
+    animateScrollToItem(index)
+    alignItemEndToViewportBottom(index, animated = true)
 }
 
 private suspend fun LazyListState.scrollChatToBottom(index: Int) {
     if (index < 0) return
-    scrollToItem(index, scrollOffset = Int.MAX_VALUE)
+    scrollToItem(index)
+    alignItemEndToViewportBottom(index, animated = false)
+}
+
+private suspend fun LazyListState.alignItemEndToViewportBottom(index: Int, animated: Boolean) {
+    // Layout may not have the full item size on the first frame after scrollToItem;
+    // re-read once so tall/streaming messages settle at the true bottom.
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.lastOrNull { it.index == index } ?: return
+    val gap = (item.offset + item.size) - info.viewportEndOffset
+    if (gap > 0) {
+        if (animated) animateScrollBy(gap.toFloat()) else scrollBy(gap.toFloat())
+    }
 }
 
 private fun copyToClipboard(context: Context, text: String) {
