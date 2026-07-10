@@ -98,6 +98,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -1484,12 +1486,13 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
     }
 }
 
-/** Small square thumb outside the text bubble (above it). */
+/** Small square thumb outside the text bubble (above it); tap opens a lightbox. */
 @Composable
 private fun MessageImageThumb(
     uri: Uri,
     modifier: Modifier = Modifier
 ) {
+    var showFullscreen by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
     Box(
         modifier = modifier
@@ -1497,15 +1500,80 @@ private fun MessageImageThumb(
             .clip(shape)
             .border(GlassStyle.border(0.14f), shape)
             .background(GlassStyle.inset())
+            .clickable { showFullscreen = true }
     ) {
         AsyncImage(
             model = uri,
-            contentDescription = "Attached image",
+            contentDescription = "Attached image, tap to expand",
             modifier = Modifier
                 .fillMaxSize()
                 .clip(shape),
             contentScale = androidx.compose.ui.layout.ContentScale.Crop
         )
+    }
+    if (showFullscreen) {
+        FullscreenImageViewer(
+            uri = uri,
+            onDismiss = { showFullscreen = false }
+        )
+    }
+}
+
+/** Near full-screen image lightbox — tap background or close to dismiss. */
+@Composable
+private fun FullscreenImageViewer(
+    uri: Uri,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.92f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                )
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            AsyncImage(
+                model = uri,
+                contentDescription = "Expanded image",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 48.dp)
+                    // Absorb taps on the image so only the dimmed chrome dismisses.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    ),
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.12f))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = Color.White
+                )
+            }
+        }
     }
 }
 
