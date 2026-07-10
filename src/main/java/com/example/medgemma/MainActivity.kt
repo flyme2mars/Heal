@@ -60,6 +60,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -514,46 +515,11 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             HorizontalDivider(
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
             )
-            AnimatedVisibility(visible = selectedImageUri != null) {
-                Box(
-                    modifier = Modifier
-                        .padding(start = 16.dp, end = 16.dp, top = 12.dp)
-                        .size(80.dp)
-                        .clip(MaterialTheme.shapes.medium)
-                        .border(GlassStyle.border(0.12f), MaterialTheme.shapes.medium)
-                        .background(GlassStyle.inset())
-                ) {
-                    AsyncImage(
-                        model = selectedImageUri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                    )
-                    IconButton(
-                        onClick = { selectedImageUri = null; imageBytes = null },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(4.dp)
-                            .size(32.dp)
-                            .background(
-                                MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f),
-                                CircleShape
-                            )
-                    ) {
-                        Icon(
-                            Icons.Default.Clear,
-                            contentDescription = "Remove image",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.inverseOnSurface
-                        )
-                    }
-                }
-            }
             Row(
                 modifier = Modifier
                     .padding(horizontal = 14.dp, vertical = 10.dp)
                     .fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Bottom
             ) {
                 FilledTonalIconButton(
                     onClick = {
@@ -587,42 +553,63 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                     is ChatUiState.Idle -> "Message Heal…"
                 }
                 val fieldShape = RoundedCornerShape(22.dp)
-                TextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
+                // Composer field: compact image chip sits inside the glass field, not a huge block above.
+                Column(
                     modifier = Modifier
                         .weight(1f)
                         .border(GlassStyle.border(0.10f), fieldShape)
-                        .clip(fieldShape),
-                    placeholder = {
-                        Text(
-                            inputPlaceholder,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                            style = MaterialTheme.typography.bodyMedium
+                        .clip(fieldShape)
+                        .background(
+                            if (isInputEnabled) GlassStyle.field() else GlassStyle.fieldDisabled()
                         )
-                    },
-                    shape = fieldShape,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = GlassStyle.field(),
-                        unfocusedContainerColor = GlassStyle.field(),
-                        disabledContainerColor = GlassStyle.fieldDisabled(),
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                        cursorColor = MaterialTheme.colorScheme.onSurface,
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    ),
-                    enabled = isInputEnabled,
-                    maxLines = 5,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(
-                        onSend = {
-                            if (inputText.isNotBlank() || imageBytes != null) sendCurrentMessage()
+                        .animateContentSize()
+                ) {
+                    AnimatedVisibility(visible = selectedImageUri != null) {
+                        selectedImageUri?.let { uri ->
+                            InputImageChip(
+                                uri = uri,
+                                onRemove = {
+                                    selectedImageUri = null
+                                    imageBytes = null
+                                },
+                                modifier = Modifier.padding(start = 10.dp, top = 10.dp, end = 10.dp)
+                            )
                         }
+                    }
+                    TextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = {
+                            Text(
+                                inputPlaceholder,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        },
+                        shape = fieldShape,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
+                            cursorColor = MaterialTheme.colorScheme.onSurface,
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        enabled = isInputEnabled,
+                        maxLines = 5,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                if (inputText.isNotBlank() || imageBytes != null) sendCurrentMessage()
+                            }
+                        )
                     )
-                )
+                }
                 Spacer(modifier = Modifier.width(10.dp))
                 val isSendEnabled = (uiState is ChatUiState.Idle || isGenerating) &&
                     (inputText.isNotBlank() || imageBytes != null || isGenerating)
@@ -1032,6 +1019,68 @@ fun NeuralPulse(modifier: Modifier = Modifier) {
 }
 
 /**
+ * Compact attachment preview inside the composer field — small rounded thumb +
+ * glass remove badge, not a full-width block.
+ */
+@Composable
+private fun InputImageChip(
+    uri: Uri,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val thumbShape = RoundedCornerShape(12.dp)
+    Box(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .padding(top = 4.dp, end = 6.dp)
+                .size(width = 56.dp, height = 56.dp)
+                .clip(thumbShape)
+                .border(GlassStyle.border(0.14f), thumbShape)
+                .background(GlassStyle.inset())
+        ) {
+            AsyncImage(
+                model = uri,
+                contentDescription = "Attached image",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+            )
+            // Soft bottom scrim so the thumb reads as a chip, not a raw crop.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(16.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                MaterialTheme.colorScheme.scrim.copy(alpha = 0.28f)
+                            )
+                        )
+                    )
+            )
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(20.dp)
+                .clip(CircleShape)
+                .border(GlassStyle.border(0.16f), CircleShape)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                .clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Remove image",
+                modifier = Modifier.size(12.dp),
+                tint = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+/**
  * Send / halt control.
  *
  * Idle + ready: solid monochrome disc with send chevron.
@@ -1236,7 +1285,7 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
     val context = LocalContext.current
     val view = LocalView.current
     var showMessageMenu by remember { mutableStateOf(false) }
-    val alignment = if (message.isUser) Alignment.CenterEnd else Alignment.CenterStart
+    val horizontal = if (message.isUser) Alignment.End else Alignment.Start
     // Monochrome glass: user slightly more opaque, assistant quieter — no brand fill.
     val containerColor = if (message.isUser) GlassStyle.userBubble() else GlassStyle.assistantBubble()
     val contentColor = MaterialTheme.colorScheme.onSurface
@@ -1245,187 +1294,218 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
     } else {
         RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp)
     }
+    val hasImage = message.imageUri != null
+    val hasCaption = message.content.isNotBlank()
+    // Bubble only when there is text / assistant chrome — image lives outside it.
+    val showBubble = hasCaption ||
+        !message.isUser ||
+        message.thought != null ||
+        message.stats != null
     var isThoughtExpanded by remember { mutableStateOf(false) }
-    Box(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        contentAlignment = alignment
+        horizontalAlignment = horizontal
     ) {
-        Box {
-            Surface(
-                color = containerColor,
-                contentColor = contentColor,
-                shape = shape,
-                border = GlassStyle.border(if (message.isUser) 0.12f else 0.08f),
-                tonalElevation = 0.dp,
-                shadowElevation = 0.dp,
-                modifier = Modifier
-                    .widthIn(max = 340.dp)
-                    .animateContentSize()
-                    .then(
-                        if (!message.isUser && message.content.isNotBlank() && !isStreaming) {
-                            Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                                    showMessageMenu = true
-                                }
-                            )
-                        } else {
-                            Modifier
-                        }
-                    )
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    if (message.imageUri != null) {
-                        val imageShape = RoundedCornerShape(12.dp)
-                        AsyncImage(
-                            model = message.imageUri,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 10.dp)
-                                .heightIn(max = 200.dp)
-                                .clip(imageShape)
-                                .border(GlassStyle.border(0.08f), imageShape),
-                            contentScale = androidx.compose.ui.layout.ContentScale.FillWidth
+        if (hasImage) {
+            MessageImageThumb(
+                uri = message.imageUri!!,
+                modifier = Modifier.padding(bottom = if (showBubble) 6.dp else 0.dp)
+            )
+        }
+        if (showBubble) {
+            Box {
+                Surface(
+                    color = containerColor,
+                    contentColor = contentColor,
+                    shape = shape,
+                    border = GlassStyle.border(if (message.isUser) 0.12f else 0.08f),
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                    modifier = Modifier
+                        .widthIn(max = 340.dp)
+                        .animateContentSize()
+                        .then(
+                            if (!message.isUser && message.content.isNotBlank() && !isStreaming) {
+                                Modifier.combinedClickable(
+                                    onClick = {},
+                                    onLongClick = {
+                                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                        showMessageMenu = true
+                                    }
+                                )
+                            } else {
+                                Modifier
+                            }
                         )
-                    }
-                    if (!message.isUser && message.thought != null) {
-                        val thoughtPreview = message.thought.lineSequence().firstOrNull { it.isNotBlank() }
-                            ?.take(80)
-                            ?.let { if (message.thought.length > 80) "$it…" else it }
-                        val insetShape = RoundedCornerShape(12.dp)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 10.dp)
-                                .clip(insetShape)
-                                .border(GlassStyle.border(0.08f), insetShape)
-                                .background(GlassStyle.inset())
-                                .clickable { isThoughtExpanded = !isThoughtExpanded }
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
-                            Column {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+                    ) {
+                        if (!message.isUser && message.thought != null) {
+                            val thoughtPreview = message.thought.lineSequence()
+                                .firstOrNull { it.isNotBlank() }
+                                ?.take(80)
+                                ?.let { if (message.thought.length > 80) "$it…" else it }
+                            val insetShape = RoundedCornerShape(12.dp)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 10.dp)
+                                    .clip(insetShape)
+                                    .border(GlassStyle.border(0.08f), insetShape)
+                                    .background(GlassStyle.inset())
+                                    .clickable { isThoughtExpanded = !isThoughtExpanded }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                Column {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                Icons.Default.Psychology,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Reasoning",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                         Icon(
-                                            Icons.Default.Psychology,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(14.dp),
+                                            imageVector = if (isThoughtExpanded) {
+                                                Icons.Default.KeyboardArrowUp
+                                            } else {
+                                                Icons.Default.KeyboardArrowDown
+                                            },
+                                            contentDescription = if (isThoughtExpanded) {
+                                                "Collapse reasoning"
+                                            } else {
+                                                "Expand reasoning"
+                                            },
+                                            modifier = Modifier.size(16.dp),
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    if (!isThoughtExpanded && thoughtPreview != null) {
+                                        Spacer(modifier = Modifier.height(6.dp))
                                         Text(
-                                            text = "Reasoning",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            text = thoughtPreview,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1
                                         )
                                     }
-                                    Icon(
-                                        imageVector = if (isThoughtExpanded) {
-                                            Icons.Default.KeyboardArrowUp
-                                        } else {
-                                            Icons.Default.KeyboardArrowDown
-                                        },
-                                        contentDescription = if (isThoughtExpanded) {
-                                            "Collapse reasoning"
-                                        } else {
-                                            "Expand reasoning"
-                                        },
-                                        modifier = Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (!isThoughtExpanded && thoughtPreview != null) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        text = thoughtPreview,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1
-                                    )
-                                }
-                                AnimatedVisibility(visible = isThoughtExpanded) {
-                                    Column {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        MarkdownText(
-                                            text = message.thought,
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                fontSize = 12.sp,
-                                                lineHeight = 16.sp
-                                            ),
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
+                                    AnimatedVisibility(visible = isThoughtExpanded) {
+                                        Column {
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            MarkdownText(
+                                                text = message.thought,
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    fontSize = 12.sp,
+                                                    lineHeight = 16.sp
+                                                ),
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    if (message.isUser) {
-                        Text(
-                            text = message.content,
-                            style = MaterialTheme.typography.bodyLarge,
-                            lineHeight = 22.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    } else {
-                        if (message.content.isEmpty()) {
-                            if (message.thought == null) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    HeartbeatIndicator()
-                                }
-                            } else {
-                                NeuralPulse(modifier = Modifier.padding(top = 4.dp))
+                        if (message.isUser) {
+                            if (hasCaption) {
+                                Text(
+                                    text = message.content,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    lineHeight = 22.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
                             }
                         } else {
-                            MarkdownText(
-                                text = message.content,
-                                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
-                                modifier = Modifier.fillMaxWidth()
+                            if (message.content.isEmpty()) {
+                                if (message.thought == null) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        HeartbeatIndicator()
+                                    }
+                                } else {
+                                    NeuralPulse(modifier = Modifier.padding(top = 4.dp))
+                                }
+                            } else {
+                                MarkdownText(
+                                    text = message.content,
+                                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                        if (message.stats != null && !message.isUser) {
+                            MessageStatsRow(stats = message.stats)
+                        }
+                        if (!message.isUser && message.content.isNotBlank() && !isStreaming) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Not medical advice. Consult a healthcare professional.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                             )
                         }
                     }
-                    if (message.stats != null && !message.isUser) {
-                        MessageStatsRow(stats = message.stats)
-                    }
-                    if (!message.isUser && message.content.isNotBlank() && !isStreaming) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Not medical advice. Consult a healthcare professional.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
-                        )
-                    }
+                }
+                DropdownMenu(
+                    expanded = showMessageMenu,
+                    onDismissRequest = { showMessageMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Copy") },
+                        onClick = {
+                            copyToClipboard(context, message.content)
+                            showMessageMenu = false
+                        },
+                        leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share") },
+                        onClick = {
+                            shareText(context, message.content)
+                            showMessageMenu = false
+                        },
+                        leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) }
+                    )
                 }
             }
-            DropdownMenu(
-                expanded = showMessageMenu,
-                onDismissRequest = { showMessageMenu = false }
-            ) {
-                DropdownMenuItem(
-                    text = { Text("Copy") },
-                    onClick = {
-                        copyToClipboard(context, message.content)
-                        showMessageMenu = false
-                    },
-                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) }
-                )
-                DropdownMenuItem(
-                    text = { Text("Share") },
-                    onClick = {
-                        shareText(context, message.content)
-                        showMessageMenu = false
-                    },
-                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) }
-                )
-            }
         }
+    }
+}
+
+/** Small square thumb outside the text bubble (above it). */
+@Composable
+private fun MessageImageThumb(
+    uri: Uri,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = modifier
+            .size(72.dp)
+            .clip(shape)
+            .border(GlassStyle.border(0.14f), shape)
+            .background(GlassStyle.inset())
+    ) {
+        AsyncImage(
+            model = uri,
+            contentDescription = "Attached image",
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(shape),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+        )
     }
 }
 
