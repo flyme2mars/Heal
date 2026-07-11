@@ -50,23 +50,39 @@ object GlassStyle {
     fun barTint(): Color =
         MaterialTheme.colorScheme.surface.copy(alpha = 0.82f)
 
+    /** Cheaper wash while streaming / scrolling — less blur cost. */
+    @Composable
+    fun barTintSoft(): Color =
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)
+
     @Composable
     fun chipTint(): Color =
         MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
 }
 
-/** Top / bottom chrome over scrolling chat — thick frosted glass. */
+/**
+ * Top / bottom chrome over scrolling chat.
+ * [soft] uses thinner blur (during generation) to cut GPU cost.
+ */
 @OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
-fun Modifier.frostedGlassBar(hazeState: HazeState): Modifier {
-    val style = HazeMaterials.thick(GlassStyle.barTint())
+fun Modifier.frostedGlassBar(hazeState: HazeState, soft: Boolean = false): Modifier {
+    val style = if (soft) {
+        HazeMaterials.thin(GlassStyle.barTintSoft())
+    } else {
+        HazeMaterials.thick(GlassStyle.barTint())
+    }
     return hazeEffect(state = hazeState, style = style)
 }
 
 /** Compact controls floating over chat (e.g. jump-to-bottom). */
 @OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
-fun Modifier.frostedGlassChip(hazeState: HazeState): Modifier {
-    val style = HazeMaterials.regular(GlassStyle.chipTint())
+fun Modifier.frostedGlassChip(hazeState: HazeState, soft: Boolean = false): Modifier {
+    val style = if (soft) {
+        HazeMaterials.thin(GlassStyle.chipTint())
+    } else {
+        HazeMaterials.regular(GlassStyle.chipTint())
+    }
     return hazeEffect(state = hazeState, style = style)
 }
