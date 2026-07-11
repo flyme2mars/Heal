@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 13+ Material You themed icon silhouette -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,31c12.7,0 23,10.3 23,23s-10.3,23 -23,23 -23,-10.3 -23,-23 10.3,-23 23,-23z"
+        android:strokeWidth="1.8"
+        android:strokeColor="#FFFFFF" />
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="nonZero"
+        android:pathData="M54,71
+            C54,71 35.8,58.5 35.8,47.2
+            C35.8,40.9 40.6,36.5 46.2,36.5
+            C49.6,36.5 52.5,38.2 54,40.9
+            C55.5,38.2 58.4,36.5 61.8,36.5
+            C67.4,36.5 72.2,40.9 72.2,47.2
+            C72.2,58.5 54,71 54,71Z" />
+</vector>

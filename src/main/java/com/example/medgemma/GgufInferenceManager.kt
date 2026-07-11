@@ -13,8 +13,18 @@ import java.io.File
 
 class GgufInferenceManager(private val context: Context) {
     companion object {
-        init {
-            System.loadLibrary("medgemma-native")
+        @Volatile
+        private var nativeLoaded = false
+
+        /** Load JNI only when the engine is first initialized — not at class load / cold start. */
+        private fun ensureNativeLoaded() {
+            if (nativeLoaded) return
+            synchronized(this) {
+                if (!nativeLoaded) {
+                    System.loadLibrary("medgemma-native")
+                    nativeLoaded = true
+                }
+            }
         }
     }
 
@@ -27,6 +37,7 @@ class GgufInferenceManager(private val context: Context) {
 
     suspend fun initialize(modelPath: String, mmprojPath: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            ensureNativeLoaded()
             if (!File(modelPath).exists()) return@withContext Result.failure(Exception("Model file not found"))
             if (!File(mmprojPath).exists()) return@withContext Result.failure(Exception("mmproj file not found"))
             if (isInitialized) {

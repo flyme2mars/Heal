@@ -14,6 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -109,10 +110,18 @@ import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.util.regex.Pattern
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
+    /** Splash stays until the first Compose frame is ready to paint. */
+    private val keepSplash = AtomicBoolean(true)
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
+        splashScreen.setKeepOnScreenCondition { keepSplash.get() }
+
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(
                 AndroidColor.TRANSPARENT,
@@ -130,7 +139,11 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ChatScreen()
+                    ChatScreen(
+                        onFirstFrame = {
+                            keepSplash.set(false)
+                        }
+                    )
                 }
             }
         }
@@ -153,7 +166,10 @@ fun HeartbeatIndicator() {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
-fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
+fun ChatScreen(
+    viewModel: ChatViewModel = viewModel(),
+    onFirstFrame: () -> Unit = {}
+) {
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
@@ -179,6 +195,13 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     var autoScrollEnabled by remember { mutableStateOf(true) }
     // Ignore NestedScroll callbacks caused by our own scroll-to-bottom calls.
     var programmaticScrollDepth by remember { mutableIntStateOf(0) }
+
+    // First frame paints → drop splash, then allow deferred JNI / model auto-load.
+    LaunchedEffect(Unit) {
+        yield()
+        onFirstFrame()
+        viewModel.onUiReady()
+    }
 
     // FAB visibility is purely positional — not tied to autoScrollEnabled — so the
     // button shows whenever the last message's end is off-screen (including mid-
@@ -1428,10 +1451,9 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
                                             maxLines = 1
                                         )
                                     }
-                                    AnimatedVisibility(visible = isThoughtExpanded && !isStreaming) {
+                                    AnimatedVisibility(visible = isThoughtExpanded) {
                                         Column {
                                             Spacer(modifier = Modifier.height(8.dp))
-                                            // Full markdown only when not mid-stream.
                                             MarkdownText(
                                                 text = message.thought,
                                                 style = MaterialTheme.typography.bodySmall.copy(
@@ -1442,18 +1464,6 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
                                                 modifier = Modifier.fillMaxWidth()
                                             )
                                         }
-                                    }
-                                    if (isThoughtExpanded && isStreaming) {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            text = message.thought,
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                fontSize = 12.sp,
-                                                lineHeight = 16.sp
-                                            ),
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
                                     }
                                 }
                             }
@@ -1476,14 +1486,8 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
                                 } else {
                                     NeuralPulse(modifier = Modifier.padding(top = 4.dp))
                                 }
-                            } else if (isStreaming) {
-                                // Plain text while tokens arrive — markdown only after complete.
-                                Text(
-                                    text = message.content,
-                                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
                             } else {
+                                // Live markdown while streaming (memoized parse in MarkdownText).
                                 MarkdownText(
                                     text = message.content,
                                     style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
