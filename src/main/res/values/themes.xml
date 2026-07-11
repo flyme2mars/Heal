@@ -6,4 +6,11 @@
         <item name="android:windowLightStatusBar">?android:attr/isLightTheme</item>
         <item name="android:windowLightNavigationBar">?android:attr/isLightTheme</item>
     </style>
+
+    <!-- Cold-start splash → Theme.MedGemma once MainActivity draws. -->
+    <style name="Theme.MedGemma.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@android:color/black</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.MedGemma</item>
+    </style>
 </resources>

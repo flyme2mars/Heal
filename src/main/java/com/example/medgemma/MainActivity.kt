@@ -14,6 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -103,17 +104,24 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.medgemma.ui.theme.MedGemmaTheme
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.util.regex.Pattern
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
+    /** Splash stays until the first Compose frame is ready to paint. */
+    private val keepSplash = AtomicBoolean(true)
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
+        splashScreen.setKeepOnScreenCondition { keepSplash.get() }
+
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(
                 AndroidColor.TRANSPARENT,
@@ -131,7 +139,11 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ChatScreen()
+                    ChatScreen(
+                        onFirstFrame = {
+                            keepSplash.set(false)
+                        }
+                    )
                 }
             }
         }
@@ -154,7 +166,10 @@ fun HeartbeatIndicator() {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
-fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
+fun ChatScreen(
+    viewModel: ChatViewModel = viewModel(),
+    onFirstFrame: () -> Unit = {}
+) {
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
@@ -180,6 +195,13 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     var autoScrollEnabled by remember { mutableStateOf(true) }
     // Ignore NestedScroll callbacks caused by our own scroll-to-bottom calls.
     var programmaticScrollDepth by remember { mutableIntStateOf(0) }
+
+    // First frame paints → drop splash, then allow deferred JNI / model auto-load.
+    LaunchedEffect(Unit) {
+        yield()
+        onFirstFrame()
+        viewModel.onUiReady()
+    }
 
     // FAB visibility is purely positional — not tied to autoScrollEnabled — so the
     // button shows whenever the last message's end is off-screen (including mid-
@@ -249,7 +271,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             selectedImageUri = uri
             if (uri != null) {
                 scope.launch {
-                    imageBytes = withContext(Dispatchers.IO) { uriToByteArray(context, uri) }
+                    imageBytes = withContext(Dispatchers.IO) { uriToRgbByteArray(context, uri) }
                 }
             } else {
                 imageBytes = null
@@ -278,8 +300,10 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
 
     LaunchedEffect(messages.size) {
         if (messages.isEmpty()) return@LaunchedEffect
-        // New bubbles always jump to latest (user just sent, or empty assistant slot).
-        scrollChatToLatest(animated = true)
+        // Only auto-follow when the user is pinned to the bottom (or just re-enabled).
+        if (autoScrollEnabled) {
+            scrollChatToLatest(animated = true)
+        }
     }
 
     LaunchedEffect(isGenerating) {
@@ -299,6 +323,8 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
         if (!isInputEnabled) return
         if (inputText.isBlank() && imageBytes == null) return
         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        // Sending always re-pins to the latest turn.
+        autoScrollEnabled = true
         viewModel.sendMessage(inputText, imageBytes, selectedImageUri)
         inputText = ""
         selectedImageUri = null
@@ -368,7 +394,11 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             ),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            itemsIndexed(messages) { index, message ->
+            itemsIndexed(
+                items = messages,
+                // Stable identity while assistant content streams (index slot).
+                key = { index, msg -> if (msg.isUser) "u-$index" else "a-$index" }
+            ) { index, message ->
                 ChatMessageItem(
                     message = message,
                     isStreaming = isGenerating &&
@@ -434,7 +464,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .onSizeChanged { topBarHeightPx = it.height }
-                .frostedGlassBar(hazeState)
+                .frostedGlassBar(hazeState, soft = isGenerating)
                 .statusBarsPadding()
         ) {
             CenterAlignedTopAppBar(
@@ -510,7 +540,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onSizeChanged { bottomBarHeightPx = it.height }
-                .frostedGlassBar(hazeState)
+                .frostedGlassBar(hazeState, soft = isGenerating)
                 .imePadding()
                 .navigationBarsPadding()
         ) {
@@ -647,7 +677,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                     )
                     .size(40.dp)
                     .clip(CircleShape)
-                    .frostedGlassChip(hazeState)
+                    .frostedGlassChip(hazeState, soft = isGenerating)
                     .border(GlassStyle.border(0.14f), CircleShape)
                     .clickable {
                         scope.launch { scrollChatToLatest(animated = true) }
@@ -832,8 +862,16 @@ fun ErrorState(message: String, onCheck: () -> Unit) {
 @Composable
 fun ModelHubContent(viewModel: ChatViewModel) {
     val downloadProgress by viewModel.modelManager.downloadProgress.collectAsState()
+    val downloadedFiles by viewModel.modelManager.downloadedFiles.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
     var tokenInput by remember { mutableStateOf(viewModel.modelManager.hfToken ?: "") }
+    // Paths from cached downloaded set — no listFiles() per recomposition.
+    val llmReady = remember(downloadedFiles) {
+        viewModel.modelManager.availableLlmModels.any { it.fileName in downloadedFiles }
+    }
+    val mmprojReady = remember(downloadedFiles) {
+        viewModel.modelManager.availableMmprojModels.any { it.fileName in downloadedFiles }
+    }
     Column(modifier = Modifier.fillMaxWidth().padding(24.dp).verticalScroll(rememberScrollState())) {
         Text("Models & settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
@@ -885,9 +923,13 @@ fun ModelHubContent(viewModel: ChatViewModel) {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
-                val llmPath = viewModel.modelManager.getDownloadedLlmPath()
-                val mmprojPath = viewModel.modelManager.getDownloadedMmprojPath()
-                if (llmPath != null && mmprojPath != null && uiState !is ChatUiState.Idle && uiState !is ChatUiState.Loading) { HealButton(text = "Load model", onClick = { viewModel.initializeEngine() }, modifier = Modifier.width(140.dp)) }
+                if (llmReady && mmprojReady && uiState !is ChatUiState.Idle && uiState !is ChatUiState.Loading) {
+                    HealButton(
+                        text = "Load model",
+                        onClick = { viewModel.initializeEngine() },
+                        modifier = Modifier.width(140.dp)
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(32.dp))
@@ -898,7 +940,15 @@ fun ModelHubContent(viewModel: ChatViewModel) {
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(12.dp))
-        viewModel.modelManager.availableLlmModels.forEach { model -> ModelItem(model = model, isDownloaded = viewModel.modelManager.isModelDownloaded(model.fileName), downloadProgress = downloadProgress[model.fileName], onDownload = { viewModel.downloadModel(model) }); Spacer(modifier = Modifier.height(8.dp)) }
+        viewModel.modelManager.availableLlmModels.forEach { model ->
+            ModelItem(
+                model = model,
+                isDownloaded = model.fileName in downloadedFiles,
+                downloadProgress = downloadProgress[model.fileName],
+                onDownload = { viewModel.downloadModel(model) }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
         Spacer(modifier = Modifier.height(24.dp))
         Text(
             "VISION COMPONENTS",
@@ -907,7 +957,15 @@ fun ModelHubContent(viewModel: ChatViewModel) {
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(12.dp))
-        viewModel.modelManager.availableMmprojModels.forEach { model -> ModelItem(model = model, isDownloaded = viewModel.modelManager.isModelDownloaded(model.fileName), downloadProgress = downloadProgress[model.fileName], onDownload = { viewModel.downloadModel(model) }); Spacer(modifier = Modifier.height(8.dp)) }
+        viewModel.modelManager.availableMmprojModels.forEach { model ->
+            ModelItem(
+                model = model,
+                isDownloaded = model.fileName in downloadedFiles,
+                downloadProgress = downloadProgress[model.fileName],
+                onDownload = { viewModel.downloadModel(model) }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
         Spacer(modifier = Modifier.height(32.dp))
     }
 }
@@ -993,23 +1051,6 @@ fun ModelItem(model: GgufModel, isDownloaded: Boolean, downloadProgress: Downloa
     }
 }
 
-private fun uriToByteArray(context: android.content.Context, uri: Uri, maxDim: Int = 448): ByteArray? {
-    return try {
-        val inputStream = context.contentResolver.openInputStream(uri)
-        val originalBitmap = BitmapFactory.decodeStream(inputStream)
-        inputStream?.close()
-        if (originalBitmap == null) return null
-        val finalBitmap = Bitmap.createScaledBitmap(originalBitmap, maxDim, maxDim, true)
-        val pixels = IntArray(maxDim * maxDim)
-        finalBitmap.getPixels(pixels, 0, maxDim, 0, 0, maxDim, maxDim)
-        val rgbBytes = ByteArray(maxDim * maxDim * 3)
-        for (i in 0 until maxDim * maxDim) { val p = pixels[i]; rgbBytes[i * 3 + 0] = ((p shr 16) and 0xFF).toByte(); rgbBytes[i * 3 + 1] = ((p shr 8) and 0xFF).toByte(); rgbBytes[i * 3 + 2] = (p and 0xFF).toByte() }
-        if (finalBitmap != originalBitmap) finalBitmap.recycle()
-        originalBitmap.recycle()
-        rgbBytes
-    } catch (e: Exception) { null }
-}
-
 @Composable
 fun NeuralPulse(modifier: Modifier = Modifier) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -1040,8 +1081,13 @@ private fun InputImageChip(
                 .border(GlassStyle.border(0.14f), thumbShape)
                 .background(GlassStyle.inset())
         ) {
+            val chipContext = LocalContext.current
             AsyncImage(
-                model = uri,
+                model = ImageRequest.Builder(chipContext)
+                    .data(uri)
+                    .size(168) // 56dp @ 3x — avoid full-res decode for composer chip
+                    .crossfade(false)
+                    .build(),
                 contentDescription = "Attached image",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop
@@ -1325,7 +1371,8 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
                     shadowElevation = 0.dp,
                     modifier = Modifier
                         .widthIn(max = 340.dp)
-                        .animateContentSize()
+                        // animateContentSize during stream is pure layout thrash.
+                        .then(if (!isStreaming) Modifier.animateContentSize() else Modifier)
                         .then(
                             if (!message.isUser && message.content.isNotBlank() && !isStreaming) {
                                 Modifier.combinedClickable(
@@ -1440,6 +1487,7 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
                                     NeuralPulse(modifier = Modifier.padding(top = 4.dp))
                                 }
                             } else {
+                                // Live markdown while streaming (memoized parse in MarkdownText).
                                 MarkdownText(
                                     text = message.content,
                                     style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
@@ -1494,6 +1542,7 @@ private fun MessageImageThumb(
 ) {
     var showFullscreen by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
+    val thumbContext = LocalContext.current
     Box(
         modifier = modifier
             .size(72.dp)
@@ -1503,7 +1552,11 @@ private fun MessageImageThumb(
             .clickable { showFullscreen = true }
     ) {
         AsyncImage(
-            model = uri,
+            model = ImageRequest.Builder(thumbContext)
+                .data(uri)
+                .size(216) // 72dp @ 3x
+                .crossfade(false)
+                .build(),
             contentDescription = "Attached image, tap to expand",
             modifier = Modifier
                 .fillMaxSize()
@@ -1544,8 +1597,15 @@ private fun FullscreenImageViewer(
                 .statusBarsPadding()
                 .navigationBarsPadding()
         ) {
+            val viewerContext = LocalContext.current
+            val displayMetrics = viewerContext.resources.displayMetrics
+            val maxSide = maxOf(displayMetrics.widthPixels, displayMetrics.heightPixels)
             AsyncImage(
-                model = uri,
+                model = ImageRequest.Builder(viewerContext)
+                    .data(uri)
+                    .size(maxSide)
+                    .crossfade(true)
+                    .build(),
                 contentDescription = "Expanded image",
                 modifier = Modifier
                     .fillMaxSize()
@@ -1736,29 +1796,56 @@ private fun AnnotatedString.Builder.appendIncompleteMarkdown(
     append(text)
 }
 
+private val BULLET_LINE = Regex("^[-*] .+")
+private val NUMBERED_LINE = Regex("^\\d+\\. .+")
+
 @Composable
 fun MarkdownText(text: String?, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier) {
     if (text == null) return
-    val lines = remember(text) { text.split("\n") }
     val linkColor = MaterialTheme.colorScheme.primary
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        lines.forEach { line ->
+    // Parse once per text value — not on every parent recompose with same content.
+    val blocks = remember(text, style, linkColor) {
+        text.split("\n").map { line ->
             when {
-                line.matches(Regex("^[-*] .+")) -> Row {
-                    Text("• ", style = style, modifier = Modifier.padding(end = 2.dp))
-                    Text(buildInlineMarkdown(line.drop(2).trim(), style, linkColor), style = style)
-                }
-                line.matches(Regex("^\\d+\\. .+")) -> Row {
+                line.matches(BULLET_LINE) -> MarkdownBlock.Bullet(
+                    buildInlineMarkdown(line.drop(2).trim(), style, linkColor)
+                )
+                line.matches(NUMBERED_LINE) -> {
                     val dotIndex = line.indexOf(". ")
                     val prefix = line.substring(0, dotIndex + 1)
-                    Text("$prefix ", style = style, modifier = Modifier.padding(end = 2.dp))
-                    Text(buildInlineMarkdown(line.substring(dotIndex + 2).trim(), style, linkColor), style = style)
+                    MarkdownBlock.Numbered(
+                        prefix = prefix,
+                        body = buildInlineMarkdown(line.substring(dotIndex + 2).trim(), style, linkColor)
+                    )
                 }
-                line.isBlank() -> Spacer(modifier = Modifier.height(4.dp))
-                else -> Text(buildInlineMarkdown(line, style, linkColor), style = style)
+                line.isBlank() -> MarkdownBlock.Spacer
+                else -> MarkdownBlock.Paragraph(buildInlineMarkdown(line, style, linkColor))
             }
         }
     }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        blocks.forEach { block ->
+            when (block) {
+                is MarkdownBlock.Bullet -> Row {
+                    Text("• ", style = style, modifier = Modifier.padding(end = 2.dp))
+                    Text(block.body, style = style)
+                }
+                is MarkdownBlock.Numbered -> Row {
+                    Text("${block.prefix} ", style = style, modifier = Modifier.padding(end = 2.dp))
+                    Text(block.body, style = style)
+                }
+                MarkdownBlock.Spacer -> Spacer(modifier = Modifier.height(4.dp))
+                is MarkdownBlock.Paragraph -> Text(block.body, style = style)
+            }
+        }
+    }
+}
+
+private sealed class MarkdownBlock {
+    data class Bullet(val body: AnnotatedString) : MarkdownBlock()
+    data class Numbered(val prefix: String, val body: AnnotatedString) : MarkdownBlock()
+    data class Paragraph(val body: AnnotatedString) : MarkdownBlock()
+    data object Spacer : MarkdownBlock()
 }
 
 @Composable

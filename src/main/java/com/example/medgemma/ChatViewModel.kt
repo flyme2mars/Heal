@@ -4,11 +4,13 @@ import android.app.Application
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class SnackbarMessage(
     val text: String,
@@ -43,9 +45,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _snackbar = MutableSharedFlow<SnackbarMessage>()
     val snackbar = _snackbar.asSharedFlow()
     private var isNewConversation = true
+    /** True once the first Compose frame has been painted — gates heavy auto-load. */
+    private var uiReady = false
 
     init {
+        // Disk status only (cached paths) — no native load / mmap on ViewModel creation.
         checkModelStatus()
+    }
+
+    /**
+     * Called after the first UI frame so cold start paints before loading weights / JNI.
+     */
+    fun onUiReady() {
+        if (uiReady) return
+        uiReady = true
         maybeAutoLoadEngine()
     }
 
@@ -71,7 +84,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun maybeAutoLoadEngine() {
+        if (!uiReady) return
         viewModelScope.launch {
+            // Refresh cache off main if needed, then load only when both GGUFs exist.
+            withContext(Dispatchers.IO) {
+                modelManager.refreshDownloadedCache()
+            }
+            checkModelStatus()
             val llmPath = modelManager.getDownloadedLlmPath()
             val mmprojPath = modelManager.getDownloadedMmprojPath()
             if (llmPath != null && mmprojPath != null && !ggufManager.isInitialized) {
@@ -104,6 +123,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             modelManager.downloadModel(model)
             checkModelStatus()
+            // Auto-load after download only once UI has already been ready this session.
             maybeAutoLoadEngine()
         }
     }

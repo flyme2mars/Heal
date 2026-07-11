@@ -1,9 +1,11 @@
 package com.example.medgemma
 
 import android.content.Context
+import android.os.StatFs
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -11,6 +13,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 data class GgufModel(
     val name: String,
@@ -36,10 +39,19 @@ class ModelManager(private val context: Context) {
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
+        // Multi-GB model pulls need long read windows; connect stays tight.
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .writeTimeout(0, TimeUnit.MILLISECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
     private val _downloadProgress = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
     val downloadProgress = _downloadProgress.asStateFlow()
+
+    /** Cached on-disk set; avoids listFiles() from Compose every progress tick. */
+    private val _downloadedFiles = MutableStateFlow<Set<String>>(emptySet())
+    val downloadedFiles: StateFlow<Set<String>> = _downloadedFiles.asStateFlow()
 
     var hfToken: String? = null
 
@@ -109,37 +121,45 @@ class ModelManager(private val context: Context) {
         )
     )
 
+    init {
+        refreshDownloadedCache()
+    }
+
     fun getModelDir(): File {
         val dir = File(context.filesDir, "models")
         if (!dir.exists()) dir.mkdirs()
         return dir
     }
 
-    fun isModelDownloaded(fileName: String): Boolean {
-        val file = File(getModelDir(), fileName)
-        return file.exists() && !File(getModelDir(), "$fileName.tmp").exists()
+    fun refreshDownloadedCache() {
+        val names = getModelDir().listFiles()
+            ?.asSequence()
+            ?.filter { it.isFile && it.name.endsWith(".gguf") && !it.name.endsWith(".tmp") }
+            ?.map { it.name }
+            ?.toSet()
+            ?: emptySet()
+        _downloadedFiles.value = names
     }
 
+    fun isModelDownloaded(fileName: String): Boolean =
+        fileName in _downloadedFiles.value
+
+    /**
+     * Download [model] with throttled progress (max ~1% or 200ms), larger I/O buffer,
+     * free-space check, and delete-previous-only-after-success semantics.
+     */
     suspend fun downloadModel(model: GgufModel) = withContext(Dispatchers.IO) {
-        _downloadProgress.value += (model.fileName to DownloadProgress(model.fileName, 0f, true))
+        emitProgress(model.fileName, 0f, isDownloading = true)
+
+        val modelDir = getModelDir()
+        val destinationFile = File(modelDir, model.fileName)
+        val tempFile = File(modelDir, "${model.fileName}.tmp")
+        tempFile.delete()
 
         try {
-            val destinationFile = File(getModelDir(), model.fileName)
-            val tempFile = File(getModelDir(), "${model.fileName}.tmp")
-            
-            // Delete existing models of the same type first
-            val currentModels = getModelDir().listFiles() ?: emptyArray()
-            for (file in currentModels) {
-                if (file.name.endsWith(".gguf") && file.name != model.fileName) {
-                    val isLlm = availableLlmModels.any { it.fileName == file.name }
-                    val isMmproj = availableMmprojModels.any { it.fileName == file.name }
-                    
-                    if ((model.type == ModelType.LLM && isLlm) || (model.type == ModelType.MMPROJ && isMmproj)) {
-                        Log.d(TAG, "Deleting old model: ${file.name}")
-                        file.delete()
-                    }
-                }
-            }
+            // Rough lower bound from size label when present (e.g. "~1.5 GB"); else 500MB.
+            val minBytes = estimateMinBytes(model.sizeLabel)
+            ensureFreeSpace(modelDir, minBytes)
 
             val requestBuilder = Request.Builder()
                 .url(model.url)
@@ -153,7 +173,7 @@ class ModelManager(private val context: Context) {
             }
 
             val request = requestBuilder.build()
-            
+
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val errorMsg = "Server returned ${response.code}: ${response.message}"
@@ -163,54 +183,138 @@ class ModelManager(private val context: Context) {
 
                 val body = response.body ?: throw IOException("Empty response body")
                 val fileLength = body.contentLength()
-                val inputStream = body.byteStream()
-                val outputStream = FileOutputStream(tempFile)
-
-                val data = ByteArray(8192)
-                var total: Long = 0
-                var count: Int
-                while (inputStream.read(data).also { count = it } != -1) {
-                    total += count
-                    if (fileLength > 0) {
-                        val progress = total.toFloat() / fileLength.toFloat()
-                        _downloadProgress.value += (model.fileName to DownloadProgress(model.fileName, progress, true))
-                    }
-                    outputStream.write(data, 0, count)
+                if (fileLength > 0) {
+                    ensureFreeSpace(modelDir, fileLength + MIN_FREE_MARGIN_BYTES)
                 }
 
-                outputStream.flush()
-                outputStream.close()
-                inputStream.close()
+                body.byteStream().use { inputStream ->
+                    FileOutputStream(tempFile).use { outputStream ->
+                        val data = ByteArray(IO_BUFFER_BYTES)
+                        var total = 0L
+                        var lastEmitAt = 0L
+                        var lastEmitProgress = -1f
+                        var count: Int
+                        while (inputStream.read(data).also { count = it } != -1) {
+                            outputStream.write(data, 0, count)
+                            total += count
+                            if (fileLength > 0) {
+                                val progress = (total.toFloat() / fileLength.toFloat()).coerceIn(0f, 1f)
+                                val now = System.currentTimeMillis()
+                                val progressDelta = progress - lastEmitProgress
+                                val timeDelta = now - lastEmitAt
+                                if (progressDelta >= PROGRESS_STEP || timeDelta >= PROGRESS_INTERVAL_MS || progress >= 1f) {
+                                    emitProgress(model.fileName, progress, isDownloading = true)
+                                    lastEmitAt = now
+                                    lastEmitProgress = progress
+                                }
+                            }
+                        }
+                        outputStream.flush()
+                    }
+                }
+
+                if (fileLength > 0 && tempFile.length() != fileLength) {
+                    throw IOException(
+                        "Download size mismatch: expected $fileLength, got ${tempFile.length()}"
+                    )
+                }
             }
 
-            // Rename temp to destination
-            if (tempFile.renameTo(destinationFile)) {
-                _downloadProgress.value += (model.fileName to DownloadProgress(model.fileName, 1.0f, false))
-            } else {
-                throw IOException("Failed to rename temp file")
+            // Promote temp → final, then remove other models of the same type.
+            if (destinationFile.exists()) destinationFile.delete()
+            if (!tempFile.renameTo(destinationFile)) {
+                // Cross-filesystem fallback
+                tempFile.copyTo(destinationFile, overwrite = true)
+                tempFile.delete()
             }
+
+            deleteSiblingModels(model)
+            refreshDownloadedCache()
+            emitProgress(model.fileName, 1f, isDownloading = false)
         } catch (e: Exception) {
             Log.e(TAG, "Download failed for ${model.fileName}", e)
-            _downloadProgress.value += (model.fileName to DownloadProgress(model.fileName, 0f, false, e.toString()))
-            // Clean up partial file
-            File(getModelDir(), "${model.fileName}.tmp").delete()
+            tempFile.delete()
+            emitProgress(
+                model.fileName,
+                0f,
+                isDownloading = false,
+                error = e.message ?: e.toString()
+            )
         }
     }
 
     fun deleteModel(fileName: String) {
         File(getModelDir(), fileName).delete()
-        _downloadProgress.value -= fileName
+        File(getModelDir(), "$fileName.tmp").delete()
+        _downloadProgress.value = _downloadProgress.value - fileName
+        refreshDownloadedCache()
     }
-    
+
     fun getDownloadedLlmPath(): String? {
-        return getModelDir().listFiles()?.find { file -> 
-            availableLlmModels.any { it.fileName == file.name }
-        }?.absolutePath
+        val names = _downloadedFiles.value
+        val fileName = availableLlmModels.firstOrNull { it.fileName in names }?.fileName ?: return null
+        val file = File(getModelDir(), fileName)
+        return if (file.exists()) file.absolutePath else null
     }
 
     fun getDownloadedMmprojPath(): String? {
-        return getModelDir().listFiles()?.find { file -> 
-            availableMmprojModels.any { it.fileName == file.name }
-        }?.absolutePath
+        val names = _downloadedFiles.value
+        val fileName = availableMmprojModels.firstOrNull { it.fileName in names }?.fileName ?: return null
+        val file = File(getModelDir(), fileName)
+        return if (file.exists()) file.absolutePath else null
+    }
+
+    private fun emitProgress(
+        fileName: String,
+        progress: Float,
+        isDownloading: Boolean,
+        error: String? = null
+    ) {
+        _downloadProgress.value = _downloadProgress.value + (
+            fileName to DownloadProgress(fileName, progress, isDownloading, error)
+            )
+    }
+
+    private fun deleteSiblingModels(model: GgufModel) {
+        val currentModels = getModelDir().listFiles() ?: return
+        for (file in currentModels) {
+            if (!file.name.endsWith(".gguf") || file.name == model.fileName) continue
+            val isLlm = availableLlmModels.any { it.fileName == file.name }
+            val isMmproj = availableMmprojModels.any { it.fileName == file.name }
+            if ((model.type == ModelType.LLM && isLlm) || (model.type == ModelType.MMPROJ && isMmproj)) {
+                Log.d(TAG, "Deleting old model after successful download: ${file.name}")
+                file.delete()
+            }
+        }
+    }
+
+    private fun ensureFreeSpace(dir: File, requiredBytes: Long) {
+        val stat = StatFs(dir.absolutePath)
+        val available = stat.availableBlocksLong * stat.blockSizeLong
+        if (available < requiredBytes) {
+            throw IOException(
+                "Not enough free space (need ~${requiredBytes / (1024 * 1024)} MB, " +
+                    "have ~${available / (1024 * 1024)} MB)"
+            )
+        }
+    }
+
+    private fun estimateMinBytes(sizeLabel: String): Long {
+        // Parse "~1.5 GB" / "~681 MB" loosely; fall back to 500 MB.
+        val normalized = sizeLabel.lowercase().replace("~", "").trim()
+        val number = Regex("""([\d.]+)""").find(normalized)?.groupValues?.get(1)?.toDoubleOrNull()
+            ?: return 500L * 1024 * 1024
+        return when {
+            "gb" in normalized -> (number * 1024 * 1024 * 1024).toLong()
+            "mb" in normalized -> (number * 1024 * 1024).toLong()
+            else -> 500L * 1024 * 1024
+        }
+    }
+
+    companion object {
+        private const val IO_BUFFER_BYTES = 256 * 1024
+        private const val PROGRESS_STEP = 0.01f
+        private const val PROGRESS_INTERVAL_MS = 200L
+        private const val MIN_FREE_MARGIN_BYTES = 64L * 1024 * 1024
     }
 }
