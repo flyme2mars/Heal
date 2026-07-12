@@ -128,11 +128,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun cancelDownload(model: GgufModel) {
+        modelManager.cancelDownload(model.fileName)
+    }
+
     fun sendMessage(text: String, imageBytes: ByteArray? = null, imageUri: android.net.Uri? = null) {
         if (text.isBlank() && imageBytes == null) return
         if (!ggufManager.isInitialized) return
 
-        _messages.add(ChatMessage(text, isUser = true, imageUri = imageUri))
+        // Prefer app-private file URI so thumbs survive process death / grant expiry.
+        val stableImageUri = imageUri?.let { uri ->
+            if (uri.scheme == "file" && uri.path?.contains("/chat_images/") == true) {
+                uri
+            } else {
+                ChatAttachmentStore.persistImage(getApplication(), uri) ?: uri
+            }
+        }
+
+        _messages.add(ChatMessage(text, isUser = true, imageUri = stableImageUri))
 
         viewModelScope.launch {
             _isGenerating.value = true
