@@ -8,11 +8,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 data class GgufModel(
@@ -52,6 +54,9 @@ class ModelManager(private val context: Context) {
     /** Cached on-disk set; avoids listFiles() from Compose every progress tick. */
     private val _downloadedFiles = MutableStateFlow<Set<String>>(emptySet())
     val downloadedFiles: StateFlow<Set<String>> = _downloadedFiles.asStateFlow()
+
+    /** Active OkHttp calls so UI can cancel multi-GB pulls. */
+    private val activeCalls = ConcurrentHashMap<String, Call>()
 
     var hfToken: String? = null
 
@@ -147,8 +152,12 @@ class ModelManager(private val context: Context) {
     /**
      * Download [model] with throttled progress (max ~1% or 200ms), larger I/O buffer,
      * free-space check, and delete-previous-only-after-success semantics.
+     * Cancellable via [cancelDownload].
      */
     suspend fun downloadModel(model: GgufModel) = withContext(Dispatchers.IO) {
+        // Cancel any in-flight pull of the same file first.
+        cancelDownload(model.fileName)
+
         emitProgress(model.fileName, 0f, isDownloading = true)
 
         val modelDir = getModelDir()
@@ -173,8 +182,10 @@ class ModelManager(private val context: Context) {
             }
 
             val request = requestBuilder.build()
+            val call = client.newCall(request)
+            activeCalls[model.fileName] = call
 
-            client.newCall(request).execute().use { response ->
+            call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val errorMsg = "Server returned ${response.code}: ${response.message}"
                     Log.e(TAG, errorMsg)
@@ -195,6 +206,9 @@ class ModelManager(private val context: Context) {
                         var lastEmitProgress = -1f
                         var count: Int
                         while (inputStream.read(data).also { count = it } != -1) {
+                            if (call.isCanceled()) {
+                                throw DownloadCancelledException()
+                            }
                             outputStream.write(data, 0, count)
                             total += count
                             if (fileLength > 0) {
@@ -231,24 +245,45 @@ class ModelManager(private val context: Context) {
             deleteSiblingModels(model)
             refreshDownloadedCache()
             emitProgress(model.fileName, 1f, isDownloading = false)
-        } catch (e: Exception) {
-            Log.e(TAG, "Download failed for ${model.fileName}", e)
+        } catch (e: DownloadCancelledException) {
+            Log.i(TAG, "Download cancelled: ${model.fileName}")
             tempFile.delete()
-            emitProgress(
-                model.fileName,
-                0f,
-                isDownloading = false,
-                error = e.message ?: e.toString()
-            )
+            emitProgress(model.fileName, 0f, isDownloading = false, error = "Cancelled")
+        } catch (e: Exception) {
+            if (e is IOException && activeCalls[model.fileName]?.isCanceled() == true) {
+                Log.i(TAG, "Download cancelled: ${model.fileName}")
+                tempFile.delete()
+                emitProgress(model.fileName, 0f, isDownloading = false, error = "Cancelled")
+            } else {
+                Log.e(TAG, "Download failed for ${model.fileName}", e)
+                tempFile.delete()
+                emitProgress(
+                    model.fileName,
+                    0f,
+                    isDownloading = false,
+                    error = e.message ?: e.toString()
+                )
+            }
+        } finally {
+            activeCalls.remove(model.fileName)
         }
     }
 
+    /** Abort an in-flight download and delete the partial .tmp file. */
+    fun cancelDownload(fileName: String) {
+        activeCalls.remove(fileName)?.cancel()
+        File(getModelDir(), "$fileName.tmp").delete()
+    }
+
     fun deleteModel(fileName: String) {
+        cancelDownload(fileName)
         File(getModelDir(), fileName).delete()
         File(getModelDir(), "$fileName.tmp").delete()
         _downloadProgress.value = _downloadProgress.value - fileName
         refreshDownloadedCache()
     }
+
+    private class DownloadCancelledException : IOException("Download cancelled")
 
     fun getDownloadedLlmPath(): String? {
         val names = _downloadedFiles.value

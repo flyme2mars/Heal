@@ -268,13 +268,18 @@ fun ChatScreen(
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri ->
-            selectedImageUri = uri
-            if (uri != null) {
-                scope.launch {
-                    imageBytes = withContext(Dispatchers.IO) { uriToRgbByteArray(context, uri) }
-                }
-            } else {
+            if (uri == null) {
+                selectedImageUri = null
                 imageBytes = null
+                return@rememberLauncherForActivityResult
+            }
+            scope.launch {
+                // Persist immediately so composer preview + chat history outlive the picker grant.
+                val stable = withContext(Dispatchers.IO) {
+                    ChatAttachmentStore.persistImage(context, uri) ?: uri
+                }
+                selectedImageUri = stable
+                imageBytes = withContext(Dispatchers.IO) { uriToRgbByteArray(context, stable) }
             }
         }
     )
@@ -945,7 +950,8 @@ fun ModelHubContent(viewModel: ChatViewModel) {
                 model = model,
                 isDownloaded = model.fileName in downloadedFiles,
                 downloadProgress = downloadProgress[model.fileName],
-                onDownload = { viewModel.downloadModel(model) }
+                onDownload = { viewModel.downloadModel(model) },
+                onCancel = { viewModel.cancelDownload(model) }
             )
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -962,7 +968,8 @@ fun ModelHubContent(viewModel: ChatViewModel) {
                 model = model,
                 isDownloaded = model.fileName in downloadedFiles,
                 downloadProgress = downloadProgress[model.fileName],
-                onDownload = { viewModel.downloadModel(model) }
+                onDownload = { viewModel.downloadModel(model) },
+                onCancel = { viewModel.cancelDownload(model) }
             )
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -971,7 +978,13 @@ fun ModelHubContent(viewModel: ChatViewModel) {
 }
 
 @Composable
-fun ModelItem(model: GgufModel, isDownloaded: Boolean, downloadProgress: DownloadProgress?, onDownload: () -> Unit) {
+fun ModelItem(
+    model: GgufModel,
+    isDownloaded: Boolean,
+    downloadProgress: DownloadProgress?,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit = {}
+) {
     val isDownloading = downloadProgress?.isDownloading == true
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1019,12 +1032,13 @@ fun ModelItem(model: GgufModel, isDownloaded: Boolean, downloadProgress: Downloa
                         modifier = Modifier.size(20.dp)
                     )
                 } else if (isDownloading) {
-                    CircularProgressIndicator(
-                        progress = { downloadProgress?.progress ?: 0f },
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Cancel download",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 } else {
                     IconButton(onClick = onDownload, modifier = Modifier.size(24.dp)) {
                         Icon(
