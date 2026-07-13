@@ -6,16 +6,22 @@ package com.example.medgemma
  * Flushes when either [maxTokensPerFlush] content tokens arrive or
  * [intervalMs] elapses since the last flush (whichever first), and always
  * on stats / finish so the final assistant text matches the full generation.
+ *
+ * Uses [StringBuilder] so long answers do not pay O(n²) string copies.
+ * Safe to call from a background collector; only flushes should hop to Main.
  */
 class StreamContentBuffer(
     private val maxTokensPerFlush: Int = DEFAULT_MAX_TOKENS_PER_FLUSH,
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
     private val nowMs: () -> Long = System::currentTimeMillis
 ) {
-    var content: String = ""
-        private set
-    var thought: String = ""
-        private set
+    private val contentBuilder = StringBuilder()
+    private val thoughtBuilder = StringBuilder()
+
+    val content: String
+        get() = contentBuilder.toString()
+    val thought: String
+        get() = thoughtBuilder.toString()
     var isThinking: Boolean = false
         private set
     /** Number of UI-facing flushes (content updates and final stats). */
@@ -57,9 +63,9 @@ class StreamContentBuffer(
             }
             else -> {
                 if (isThinking) {
-                    thought += token
+                    thoughtBuilder.append(token)
                 } else {
-                    content += token
+                    contentBuilder.append(token)
                 }
                 tokensSinceFlush++
                 return maybeFlush()
@@ -89,15 +95,16 @@ class StreamContentBuffer(
         tokensSinceFlush = 0
         lastFlushMs = nowMs()
         return Action.UpdateUi(
-            content = content,
-            thought = thought.ifBlank { null },
+            content = contentBuilder.toString(),
+            thought = thoughtBuilder.toString().ifBlank { null },
             stats = stats
         )
     }
 
     companion object {
-        const val DEFAULT_MAX_TOKENS_PER_FLUSH = 4
-        const val DEFAULT_INTERVAL_MS = 50L
+        // Slightly looser than 4/50ms: fewer markdown layouts while still feeling live.
+        const val DEFAULT_MAX_TOKENS_PER_FLUSH = 8
+        const val DEFAULT_INTERVAL_MS = 80L
     }
 }
 

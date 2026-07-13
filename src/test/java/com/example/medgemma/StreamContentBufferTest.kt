@@ -17,16 +17,16 @@ class StreamContentBufferTest {
             StreamBatchPolicy.shouldFlush(
                 tokensSinceLastFlush = 1,
                 elapsedMsSinceLastFlush = 0,
-                maxTokens = 4,
-                intervalMs = 50
+                maxTokens = 8,
+                intervalMs = 80
             )
         )
         assertFalse(
             StreamBatchPolicy.shouldFlush(
-                tokensSinceLastFlush = 3,
+                tokensSinceLastFlush = 7,
                 elapsedMsSinceLastFlush = 10,
-                maxTokens = 4,
-                intervalMs = 50
+                maxTokens = 8,
+                intervalMs = 80
             )
         )
     }
@@ -35,10 +35,10 @@ class StreamContentBufferTest {
     fun batchPolicy_flushesOnTokenCount() {
         assertTrue(
             StreamBatchPolicy.shouldFlush(
-                tokensSinceLastFlush = 4,
+                tokensSinceLastFlush = 8,
                 elapsedMsSinceLastFlush = 0,
-                maxTokens = 4,
-                intervalMs = 50
+                maxTokens = 8,
+                intervalMs = 80
             )
         )
     }
@@ -48,9 +48,9 @@ class StreamContentBufferTest {
         assertTrue(
             StreamBatchPolicy.shouldFlush(
                 tokensSinceLastFlush = 1,
-                elapsedMsSinceLastFlush = 50,
-                maxTokens = 4,
-                intervalMs = 50
+                elapsedMsSinceLastFlush = 80,
+                maxTokens = 8,
+                intervalMs = 80
             )
         )
     }
@@ -61,8 +61,8 @@ class StreamContentBufferTest {
             StreamBatchPolicy.shouldFlush(
                 tokensSinceLastFlush = 0,
                 elapsedMsSinceLastFlush = 1000,
-                maxTokens = 4,
-                intervalMs = 50
+                maxTokens = 8,
+                intervalMs = 80
             )
         )
         assertTrue(
@@ -79,12 +79,15 @@ class StreamContentBufferTest {
         // Frozen clock so only token-count batching fires.
         var clock = 0L
         val buffer = StreamContentBuffer(
-            maxTokensPerFlush = 4,
-            intervalMs = 50,
+            maxTokensPerFlush = 8,
+            intervalMs = 80,
             nowMs = { clock }
         )
 
-        val tokens = listOf("Hel", "lo", " ", "world", "!", " How", " are", " you", "?")
+        val tokens = listOf(
+            "Hel", "lo", " ", "world", "!", " How", " are", " you", "?",
+            " More", " text", " here"
+        )
         val n = tokens.size
         assertTrue("test needs N>1", n > 1)
 
@@ -114,16 +117,33 @@ class StreamContentBufferTest {
             "expected fewer UI flushes than tokens: flushes=$uiFlushEvents tokens=$n",
             uiFlushEvents < n
         )
-        // 9 tokens / 4 per flush → 2 mid-stream + maybe finish for remainder
         assertEquals(buffer.flushCount, uiFlushEvents)
-        assertTrue(buffer.flushCount >= 2)
+        // 12 tokens / 8 → 1 mid-stream flush + finish remainder
+        assertTrue(buffer.flushCount >= 1)
         assertTrue(buffer.flushCount <= 3)
+    }
+
+    @Test
+    fun stringBuilder_handlesLongSequence() {
+        var clock = 0L
+        val buffer = StreamContentBuffer(maxTokensPerFlush = 50, intervalMs = 1000, nowMs = { clock })
+        val expected = StringBuilder()
+        repeat(200) { i ->
+            val t = "t$i "
+            expected.append(t)
+            buffer.accept(t)
+        }
+        when (val final = buffer.finish()) {
+            is StreamContentBuffer.Action.UpdateUi -> assertEquals(expected.toString(), final.content)
+            else -> assertEquals(expected.toString(), buffer.content)
+        }
+        assertEquals(expected.toString(), buffer.content)
     }
 
     @Test
     fun statsToken_forceFlushesWithCompleteContent() {
         var clock = 0L
-        val buffer = StreamContentBuffer(maxTokensPerFlush = 4, intervalMs = 50, nowMs = { clock })
+        val buffer = StreamContentBuffer(maxTokensPerFlush = 8, intervalMs = 80, nowMs = { clock })
         buffer.accept("A")
         buffer.accept("B")
         val statsAction = buffer.accept("[STATS] 2 tokens • 0.10s • 20.00 t/s (native 22.00 t/s)")

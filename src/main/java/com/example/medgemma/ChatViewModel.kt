@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -136,18 +138,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (text.isBlank() && imageBytes == null) return
         if (!ggufManager.isInitialized) return
 
-        // Prefer app-private file URI so thumbs survive process death / grant expiry.
-        val stableImageUri = imageUri?.let { uri ->
-            if (uri.scheme == "file" && uri.path?.contains("/chat_images/") == true) {
-                uri
-            } else {
-                ChatAttachmentStore.persistImage(getApplication(), uri) ?: uri
-            }
-        }
-
-        _messages.add(ChatMessage(text, isUser = true, imageUri = stableImageUri))
-
         viewModelScope.launch {
+            // Prefer app-private file URI so thumbs survive process death / grant expiry.
+            // Always on IO — never block the send frame with a multi‑MB copy.
+            val stableImageUri = withContext(Dispatchers.IO) {
+                imageUri?.let { uri ->
+                    if (uri.scheme == "file" && uri.path?.contains("/chat_images/") == true) {
+                        uri
+                    } else {
+                        ChatAttachmentStore.persistImage(getApplication(), uri) ?: uri
+                    }
+                }
+            }
+
+            _messages.add(ChatMessage(text, isUser = true, imageUri = stableImageUri))
+
             _isGenerating.value = true
             _uiState.value = ChatUiState.Loading(
                 if (imageBytes != null) "Analyzing image…" else "Thinking…"
@@ -173,17 +178,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
 
+            // map+flowOn: accept/buffer on Default; collect (UI) stays on Main.
             ggufManager.generateStream(plan.prompt, imageBytes, clearContext = plan.clearContext)
-                .collect { token ->
-                    when (val action = buffer.accept(token)) {
+                .map { token -> buffer.accept(token) }
+                .flowOn(Dispatchers.Default)
+                .collect { action ->
+                    when (action) {
                         is StreamContentBuffer.Action.Error ->
                             _uiState.value = ChatUiState.Error(action.message)
-                        is StreamContentBuffer.Action.UpdateUi -> applyUi(action)
+                        is StreamContentBuffer.Action.UpdateUi -> {
+                            applyUi(action)
+                            if (_uiState.value is ChatUiState.Loading) {
+                                _uiState.value = ChatUiState.Idle
+                            }
+                        }
                         StreamContentBuffer.Action.None -> Unit
                     }
-                    if (_uiState.value is ChatUiState.Loading) _uiState.value = ChatUiState.Idle
                 }
-            when (val final = buffer.finish()) {
+            when (val final = withContext(Dispatchers.Default) { buffer.finish() }) {
                 is StreamContentBuffer.Action.UpdateUi -> applyUi(final)
                 else -> Unit
             }
