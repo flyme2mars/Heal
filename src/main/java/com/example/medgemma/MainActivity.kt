@@ -293,6 +293,12 @@ fun ChatScreen(
         }
     }
 
+    val isListScrolling by remember {
+        derivedStateOf { listState.isScrollInProgress }
+    }
+    // Soft glass while generating or scrolling — thick frost only when idle.
+    val softHaze = isGenerating || isListScrolling
+
     // Re-enable follow mode when the user manually returns to the bottom.
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.isNearBottom() }
@@ -311,6 +317,7 @@ fun ChatScreen(
         }
     }
 
+    // Throttle follow-scroll during stream (~8Hz) so measure/scroll/haze don't thrash every flush.
     LaunchedEffect(isGenerating) {
         if (!isGenerating) return@LaunchedEffect
         snapshotFlow {
@@ -321,6 +328,7 @@ fun ChatScreen(
             if (autoScrollEnabled && messages.isNotEmpty()) {
                 scrollChatToLatest(animated = false)
             }
+            kotlinx.coroutines.delay(SCROLL_FOLLOW_THROTTLE_MS)
         }
     }
 
@@ -469,7 +477,7 @@ fun ChatScreen(
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .onSizeChanged { topBarHeightPx = it.height }
-                .frostedGlassBar(hazeState, soft = isGenerating)
+                .frostedGlassBar(hazeState, soft = softHaze)
                 .statusBarsPadding()
         ) {
             CenterAlignedTopAppBar(
@@ -545,7 +553,7 @@ fun ChatScreen(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onSizeChanged { bottomBarHeightPx = it.height }
-                .frostedGlassBar(hazeState, soft = isGenerating)
+                .frostedGlassBar(hazeState, soft = softHaze)
                 .imePadding()
                 .navigationBarsPadding()
         ) {
@@ -682,7 +690,7 @@ fun ChatScreen(
                     )
                     .size(40.dp)
                     .clip(CircleShape)
-                    .frostedGlassChip(hazeState, soft = isGenerating)
+                    .frostedGlassChip(hazeState, soft = softHaze)
                     .border(GlassStyle.border(0.14f), CircleShape)
                     .clickable {
                         scope.launch { scrollChatToLatest(animated = true) }
@@ -1271,6 +1279,8 @@ private fun SendHaltButton(
 }
 
 private const val SCROLL_BOTTOM_THRESHOLD_PX = 120
+/** Max follow-scroll rate while generating (~8 Hz). */
+private const val SCROLL_FOLLOW_THROTTLE_MS = 120L
 
 /**
  * Bottom edge of the *usable* chat area: viewport end minus [afterContentPadding].
@@ -1316,8 +1326,8 @@ private suspend fun LazyListState.scrollChatToBottom(index: Int) {
 }
 
 private suspend fun LazyListState.alignItemEndToContentBottom(index: Int, animated: Boolean) {
-    // Tall / still-measuring streaming items can need more than one pass.
-    repeat(4) {
+    // Prefer 2 passes (was 4) — enough for tall bubbles without thrashing every flush.
+    repeat(if (animated) 3 else 2) {
         val info = layoutInfo
         val item = info.visibleItemsInfo.lastOrNull { it.index == index } ?: return
         // Positive gap: item extends past the padded bottom → scroll forward to reveal
@@ -1686,17 +1696,21 @@ private fun MessageStatsRow(stats: String) {
     }
 }
 
+/** Compiled once — never on the stream hot path. */
+private val INLINE_MARKDOWN: Pattern = Pattern.compile(
+    """(\*\*.*?\*\*|\*.*?\*|`[^`]+`|\[([^\]]+)]\(([^)]+)\)|(https?://\S+))""",
+    Pattern.DOTALL
+)
+private val BULLET_LINE_PATTERN: Pattern = Pattern.compile("^[-*] .+")
+private val NUMBERED_LINE_PATTERN: Pattern = Pattern.compile("^\\d+\\. .+")
+
 private fun buildInlineMarkdown(
     text: String,
     style: androidx.compose.ui.text.TextStyle,
     linkColor: Color
 ) = buildAnnotatedString {
-    val pattern = Pattern.compile(
-        """(\*\*.*?\*\*|\*.*?\*|`[^`]+`|\[([^\]]+)]\(([^)]+)\)|(https?://\S+))""",
-        Pattern.DOTALL
-    )
     var lastIndex = 0
-    val matcher = pattern.matcher(text)
+    val matcher = INLINE_MARKDOWN.matcher(text)
     while (matcher.find()) {
         append(text.substring(lastIndex, matcher.start()))
         val match = matcher.group()
@@ -1747,6 +1761,37 @@ private fun buildInlineMarkdown(
     }
     if (lastIndex < text.length) {
         appendIncompleteMarkdown(text.substring(lastIndex), style)
+    }
+}
+
+/**
+ * Full-message markdown → single [AnnotatedString] (one Text node).
+ * Cheaper to layout while streaming than a Column of per-line Texts.
+ */
+private fun buildMarkdownAnnotated(
+    text: String,
+    style: androidx.compose.ui.text.TextStyle,
+    linkColor: Color
+): AnnotatedString = buildAnnotatedString {
+    val lines = text.split("\n")
+    lines.forEachIndexed { index, line ->
+        when {
+            BULLET_LINE_PATTERN.matcher(line).matches() -> {
+                append("• ")
+                append(buildInlineMarkdown(line.drop(2).trim(), style, linkColor))
+            }
+            NUMBERED_LINE_PATTERN.matcher(line).matches() -> {
+                val dotIndex = line.indexOf(". ")
+                append(line.substring(0, dotIndex + 1))
+                append(" ")
+                append(buildInlineMarkdown(line.substring(dotIndex + 2).trim(), style, linkColor))
+            }
+            line.isBlank() -> {
+                // Blank line → visual gap via double newline
+            }
+            else -> append(buildInlineMarkdown(line, style, linkColor))
+        }
+        if (index < lines.lastIndex) append("\n")
     }
 }
 
@@ -1810,56 +1855,19 @@ private fun AnnotatedString.Builder.appendIncompleteMarkdown(
     append(text)
 }
 
-private val BULLET_LINE = Regex("^[-*] .+")
-private val NUMBERED_LINE = Regex("^\\d+\\. .+")
-
 @Composable
 fun MarkdownText(text: String?, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier) {
     if (text == null) return
     val linkColor = MaterialTheme.colorScheme.primary
-    // Parse once per text value — not on every parent recompose with same content.
-    val blocks = remember(text, style, linkColor) {
-        text.split("\n").map { line ->
-            when {
-                line.matches(BULLET_LINE) -> MarkdownBlock.Bullet(
-                    buildInlineMarkdown(line.drop(2).trim(), style, linkColor)
-                )
-                line.matches(NUMBERED_LINE) -> {
-                    val dotIndex = line.indexOf(". ")
-                    val prefix = line.substring(0, dotIndex + 1)
-                    MarkdownBlock.Numbered(
-                        prefix = prefix,
-                        body = buildInlineMarkdown(line.substring(dotIndex + 2).trim(), style, linkColor)
-                    )
-                }
-                line.isBlank() -> MarkdownBlock.Spacer
-                else -> MarkdownBlock.Paragraph(buildInlineMarkdown(line, style, linkColor))
-            }
-        }
+    // One AnnotatedString → one Text. Live markdown, far fewer layout nodes than per-line Columns.
+    val annotated = remember(text, style, linkColor) {
+        buildMarkdownAnnotated(text, style, linkColor)
     }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        blocks.forEach { block ->
-            when (block) {
-                is MarkdownBlock.Bullet -> Row {
-                    Text("• ", style = style, modifier = Modifier.padding(end = 2.dp))
-                    Text(block.body, style = style)
-                }
-                is MarkdownBlock.Numbered -> Row {
-                    Text("${block.prefix} ", style = style, modifier = Modifier.padding(end = 2.dp))
-                    Text(block.body, style = style)
-                }
-                MarkdownBlock.Spacer -> Spacer(modifier = Modifier.height(4.dp))
-                is MarkdownBlock.Paragraph -> Text(block.body, style = style)
-            }
-        }
-    }
-}
-
-private sealed class MarkdownBlock {
-    data class Bullet(val body: AnnotatedString) : MarkdownBlock()
-    data class Numbered(val prefix: String, val body: AnnotatedString) : MarkdownBlock()
-    data class Paragraph(val body: AnnotatedString) : MarkdownBlock()
-    data object Spacer : MarkdownBlock()
+    Text(
+        text = annotated,
+        style = style,
+        modifier = modifier
+    )
 }
 
 @Composable
