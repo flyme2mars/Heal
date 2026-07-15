@@ -482,7 +482,13 @@ fun ChatScreen(
         ) {
             CenterAlignedTopAppBar(
                     navigationIcon = {
-                        IconButton(onClick = { showModelSheet = true }, enabled = !isGenerating) {
+                        IconButton(
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                showModelSheet = true
+                            },
+                            enabled = !isGenerating
+                        ) {
                             Icon(
                                 Icons.Default.Tune,
                                 contentDescription = "Models and settings",
@@ -707,16 +713,32 @@ fun ChatScreen(
         }
     }
     if (showModelSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val sheetScope = rememberCoroutineScope()
+        fun dismissModelSheet() {
+            sheetScope.launch {
+                sheetState.hide()
+            }.invokeOnCompletion {
+                if (!sheetState.isVisible) showModelSheet = false
+            }
+        }
         ModalBottomSheet(
             onDismissRequest = { showModelSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            sheetState = sheetState,
+            // Full edge-to-edge sheet; we own status/nav insets so the handle
+            // never sits under the camera notch.
+            contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface,
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            tonalElevation = 0.dp,
+            scrimColor = Color.Black.copy(alpha = 0.52f),
+            dragHandle = null
         ) {
-            ModelHubContent(viewModel)
+            ModelHubSheet(
+                viewModel = viewModel,
+                onDismiss = { dismissModelSheet() }
+            )
         }
     }
 }
@@ -872,116 +894,170 @@ fun ErrorState(message: String, onCheck: () -> Unit) {
     }
 }
 
+/**
+ * Models & settings sheet — edge-to-edge safe under camera notch, LazyColumn for
+ * smooth scroll, explicit close + drag-to-dismiss.
+ */
 @Composable
-fun ModelHubContent(viewModel: ChatViewModel) {
+fun ModelHubSheet(
+    viewModel: ChatViewModel,
+    onDismiss: () -> Unit
+) {
     val downloadProgress by viewModel.modelManager.downloadProgress.collectAsState()
     val downloadedFiles by viewModel.modelManager.downloadedFiles.collectAsState()
-    val uiState by viewModel.uiState.collectAsState()
     var tokenInput by remember { mutableStateOf(viewModel.modelManager.hfToken ?: "") }
-    // Paths from cached downloaded set — no listFiles() per recomposition.
-    val llmReady = remember(downloadedFiles) {
-        viewModel.modelManager.availableLlmModels.any { it.fileName in downloadedFiles }
-    }
-    val mmprojReady = remember(downloadedFiles) {
-        viewModel.modelManager.availableMmprojModels.any { it.fileName in downloadedFiles }
-    }
-    Column(modifier = Modifier.fillMaxWidth().padding(24.dp).verticalScroll(rememberScrollState())) {
-        Text("Models & settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(
-            "Download models and manage your token",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-        Text(
-            "Token",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = tokenInput,
-            onValueChange = { tokenInput = it; viewModel.modelManager.hfToken = it },
-            placeholder = {
-                Text("hf_...", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            shape = MaterialTheme.shapes.medium,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                cursorColor = MaterialTheme.colorScheme.primary
-            )
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large,
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    val llmModels = viewModel.modelManager.availableLlmModels
+    val mmprojModels = viewModel.modelManager.availableMmprojModels
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.94f)
+            // Handle sits below status bar / camera cutout.
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .navigationBarsPadding()
+    ) {
+        // Drag affordance + chrome header (pinned; list scrolls underneath).
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp, bottom = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(modifier = Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .width(36.dp)
+                    .height(4.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f))
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "STATUS",
-                        style = MaterialTheme.typography.labelSmall,
+                        "Models & settings",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "Weights, vision, and access",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    val statusText = when(uiState) { is ChatUiState.Idle -> "Ready"; is ChatUiState.Loading -> "Loading"; is ChatUiState.Error -> "Error"; is ChatUiState.NoModel -> "No model"; else -> "Ready" }
-                    Text(
-                        statusText,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
                 }
-                if (llmReady && mmprojReady && uiState !is ChatUiState.Idle && uiState !is ChatUiState.Loading) {
-                    HealButton(
-                        text = "Load model",
-                        onClick = { viewModel.initializeEngine() },
-                        modifier = Modifier.width(140.dp)
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(GlassStyle.iconWell())
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
-        }
-        Spacer(modifier = Modifier.height(32.dp))
-        Text(
-            "LANGUAGE MODELS",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        viewModel.modelManager.availableLlmModels.forEach { model ->
-            ModelItem(
-                model = model,
-                isDownloaded = model.fileName in downloadedFiles,
-                downloadProgress = downloadProgress[model.fileName],
-                onDownload = { viewModel.downloadModel(model) },
-                onCancel = { viewModel.cancelDownload(model) }
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
             )
-            Spacer(modifier = Modifier.height(8.dp))
         }
-        Spacer(modifier = Modifier.height(24.dp))
-        Text(
-            "VISION COMPONENTS",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        viewModel.modelManager.availableMmprojModels.forEach { model ->
-            ModelItem(
-                model = model,
-                isDownloaded = model.fileName in downloadedFiles,
-                downloadProgress = downloadProgress[model.fileName],
-                onDownload = { viewModel.downloadModel(model) },
-                onCancel = { viewModel.cancelDownload(model) }
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item(key = "token", contentType = "token") {
+                Text(
+                    "Hugging Face token",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = {
+                        tokenInput = it
+                        viewModel.modelManager.hfToken = it
+                    },
+                    placeholder = {
+                        Text(
+                            "hf_… (optional for public models)",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                        unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                        focusedContainerColor = GlassStyle.field(),
+                        unfocusedContainerColor = GlassStyle.field(),
+                        cursorColor = MaterialTheme.colorScheme.onSurface
+                    )
+                )
+            }
+
+            item(key = "llm-header", contentType = "section") {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "Language models",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            items(
+                items = llmModels,
+                key = { it.fileName },
+                contentType = { "model" }
+            ) { model ->
+                ModelItem(
+                    model = model,
+                    isDownloaded = model.fileName in downloadedFiles,
+                    downloadProgress = downloadProgress[model.fileName],
+                    onDownload = { viewModel.downloadModel(model) },
+                    onCancel = { viewModel.cancelDownload(model) }
+                )
+            }
+
+            item(key = "mmproj-header", contentType = "section") {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "Vision projectors",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            items(
+                items = mmprojModels,
+                key = { it.fileName },
+                contentType = { "model" }
+            ) { model ->
+                ModelItem(
+                    model = model,
+                    isDownloaded = model.fileName in downloadedFiles,
+                    downloadProgress = downloadProgress[model.fileName],
+                    onDownload = { viewModel.downloadModel(model) },
+                    onCancel = { viewModel.cancelDownload(model) }
+                )
+            }
+
+            item(key = "footer-space") {
+                Spacer(modifier = Modifier.height(12.dp))
+            }
         }
-        Spacer(modifier = Modifier.height(32.dp))
     }
 }
 
@@ -994,79 +1070,95 @@ fun ModelItem(
     onCancel: () -> Unit = {}
 ) {
     val isDownloading = downloadProgress?.isDownloading == true
-    Card(
+    val progress = downloadProgress?.progress ?: 0f
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isDownloaded) {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            } else {
-                MaterialTheme.colorScheme.surfaceContainer
-            }
-        ),
-        border = if (isDownloaded) {
-            androidx.compose.foundation.BorderStroke(
-                1.dp,
-                MaterialTheme.colorScheme.outlineVariant
-            )
-        } else null
+        shape = RoundedCornerShape(16.dp),
+        color = if (isDownloaded) GlassStyle.inset() else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f),
+        border = GlassStyle.border(if (isDownloaded) 0.12f else 0.08f)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         model.name,
-                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        model.fileName,
+                        buildString {
+                            append(model.sizeLabel.ifBlank { "GGUF" })
+                            if (model.sizeLabel.isNotBlank()) append(" · ")
+                            append(model.fileName.removeSuffix(".gguf").take(28))
+                            if (model.fileName.length > 32) append("…")
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
-                    if (model.sizeLabel.isNotBlank()) {
-                        Text(
-                            model.sizeLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
                 }
-                if (isDownloaded) {
-                    Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                } else if (isDownloading) {
-                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                Spacer(modifier = Modifier.width(8.dp))
+                when {
+                    isDownloaded -> {
                         Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Cancel download",
-                            tint = MaterialTheme.colorScheme.onSurface
+                            Icons.Default.CheckCircle,
+                            contentDescription = "Downloaded",
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                            modifier = Modifier.size(22.dp)
                         )
                     }
-                } else {
-                    IconButton(onClick = onDownload, modifier = Modifier.size(24.dp)) {
-                        Icon(
-                            Icons.Default.Download,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    isDownloading -> {
+                        IconButton(
+                            onClick = onCancel,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(GlassStyle.iconWell())
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Cancel download",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    else -> {
+                        IconButton(
+                            onClick = onDownload,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(GlassStyle.iconWell())
+                        ) {
+                            Icon(
+                                Icons.Default.Download,
+                                contentDescription = "Download ${model.name}",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
             }
             if (isDownloading) {
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 LinearProgressIndicator(
-                    progress = { downloadProgress?.progress ?: 0f },
+                    progress = { progress },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(2.dp)
+                        .height(3.dp)
                         .clip(CircleShape),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                    trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "${(progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
