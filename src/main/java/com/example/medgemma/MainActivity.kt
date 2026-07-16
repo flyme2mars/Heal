@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -63,6 +64,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -482,7 +484,13 @@ fun ChatScreen(
         ) {
             CenterAlignedTopAppBar(
                     navigationIcon = {
-                        IconButton(onClick = { showModelSheet = true }, enabled = !isGenerating) {
+                        IconButton(
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                showModelSheet = true
+                            },
+                            enabled = !isGenerating
+                        ) {
                             Icon(
                                 Icons.Default.Tune,
                                 contentDescription = "Models and settings",
@@ -548,130 +556,48 @@ fun ChatScreen(
             )
         }
 
-        Column(
+        ChatComposerBar(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onSizeChanged { bottomBarHeightPx = it.height }
                 .frostedGlassBar(hazeState, soft = softHaze)
                 .imePadding()
-                .navigationBarsPadding()
-        ) {
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-            )
-            Row(
-                modifier = Modifier
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .fillMaxWidth(),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                FilledTonalIconButton(
-                    onClick = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
-                    enabled = uiState is ChatUiState.Idle && !isGenerating,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .border(GlassStyle.border(0.10f), CircleShape),
-                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                        containerColor = GlassStyle.iconWell(),
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        disabledContainerColor = GlassStyle.fieldDisabled(),
-                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) {
-                    Icon(
-                        Icons.Default.Image,
-                        contentDescription = "Attach image",
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                val inputPlaceholder = when (uiState) {
-                    is ChatUiState.NoModel -> "Download a model to chat…"
-                    is ChatUiState.ModelAvailable -> "Load model to chat…"
-                    is ChatUiState.Loading -> if (messages.isEmpty()) "Loading model…" else "Heal is responding…"
-                    is ChatUiState.Error -> "Fix error in settings…"
-                    is ChatUiState.Idle -> "Message Heal…"
-                }
-                val fieldShape = RoundedCornerShape(22.dp)
-                // Composer field: compact image chip sits inside the glass field, not a huge block above.
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .border(GlassStyle.border(0.10f), fieldShape)
-                        .clip(fieldShape)
-                        .background(
-                            if (isInputEnabled) GlassStyle.field() else GlassStyle.fieldDisabled()
-                        )
-                        .animateContentSize()
-                ) {
-                    AnimatedVisibility(visible = selectedImageUri != null) {
-                        selectedImageUri?.let { uri ->
-                            InputImageChip(
-                                uri = uri,
-                                onRemove = {
-                                    selectedImageUri = null
-                                    imageBytes = null
-                                },
-                                modifier = Modifier.padding(start = 10.dp, top = 10.dp, end = 10.dp)
-                            )
-                        }
-                    }
-                    TextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = {
-                            Text(
-                                inputPlaceholder,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        },
-                        shape = fieldShape,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            disabledContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            disabledIndicatorColor = Color.Transparent,
-                            cursorColor = MaterialTheme.colorScheme.onSurface,
-                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        ),
-                        enabled = isInputEnabled,
-                        maxLines = 5,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(
-                            onSend = {
-                                if (inputText.isNotBlank() || imageBytes != null) sendCurrentMessage()
-                            }
-                        )
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                val isSendEnabled = (uiState is ChatUiState.Idle || isGenerating) &&
-                    (inputText.isNotBlank() || imageBytes != null || isGenerating)
-                SendHaltButton(
-                    isGenerating = isGenerating,
-                    enabled = isSendEnabled,
-                    onClick = {
-                        if (isGenerating) {
-                            view.performHapticFeedback(HapticFeedbackConstants.REJECT)
-                            viewModel.stopGeneration()
-                        } else if (isSendEnabled) {
-                            sendCurrentMessage()
-                        }
-                    }
+                .navigationBarsPadding(),
+            inputText = inputText,
+            onInputChange = { inputText = it },
+            selectedImageUri = selectedImageUri,
+            onRemoveImage = {
+                selectedImageUri = null
+                imageBytes = null
+            },
+            isInputEnabled = isInputEnabled,
+            isGenerating = isGenerating,
+            canAttach = uiState is ChatUiState.Idle && !isGenerating,
+            canSend = (uiState is ChatUiState.Idle || isGenerating) &&
+                (inputText.isNotBlank() || imageBytes != null || isGenerating),
+            placeholder = when (uiState) {
+                is ChatUiState.NoModel -> "Download a model to chat…"
+                is ChatUiState.ModelAvailable -> "Load model to chat…"
+                is ChatUiState.Loading ->
+                    if (messages.isEmpty()) "Loading model…" else "Heal is responding…"
+                is ChatUiState.Error -> "Fix error in settings…"
+                is ChatUiState.Idle -> "Message Heal…"
+            },
+            onAttach = {
+                photoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                 )
+            },
+            onSendOrStop = {
+                if (isGenerating) {
+                    view.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                    viewModel.stopGeneration()
+                } else {
+                    sendCurrentMessage()
+                }
             }
-        }
+        )
 
         SnackbarHost(
             hostState = snackbarHostState,
@@ -707,16 +633,32 @@ fun ChatScreen(
         }
     }
     if (showModelSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val sheetScope = rememberCoroutineScope()
+        fun dismissModelSheet() {
+            sheetScope.launch {
+                sheetState.hide()
+            }.invokeOnCompletion {
+                if (!sheetState.isVisible) showModelSheet = false
+            }
+        }
         ModalBottomSheet(
             onDismissRequest = { showModelSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            sheetState = sheetState,
+            // Full edge-to-edge sheet; we own status/nav insets so the handle
+            // never sits under the camera notch.
+            contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface,
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            tonalElevation = 0.dp,
+            scrimColor = Color.Black.copy(alpha = 0.52f),
+            dragHandle = null
         ) {
-            ModelHubContent(viewModel)
+            ModelHubSheet(
+                viewModel = viewModel,
+                onDismiss = { dismissModelSheet() }
+            )
         }
     }
 }
@@ -872,116 +814,170 @@ fun ErrorState(message: String, onCheck: () -> Unit) {
     }
 }
 
+/**
+ * Models & settings sheet — edge-to-edge safe under camera notch, LazyColumn for
+ * smooth scroll, explicit close + drag-to-dismiss.
+ */
 @Composable
-fun ModelHubContent(viewModel: ChatViewModel) {
+fun ModelHubSheet(
+    viewModel: ChatViewModel,
+    onDismiss: () -> Unit
+) {
     val downloadProgress by viewModel.modelManager.downloadProgress.collectAsState()
     val downloadedFiles by viewModel.modelManager.downloadedFiles.collectAsState()
-    val uiState by viewModel.uiState.collectAsState()
     var tokenInput by remember { mutableStateOf(viewModel.modelManager.hfToken ?: "") }
-    // Paths from cached downloaded set — no listFiles() per recomposition.
-    val llmReady = remember(downloadedFiles) {
-        viewModel.modelManager.availableLlmModels.any { it.fileName in downloadedFiles }
-    }
-    val mmprojReady = remember(downloadedFiles) {
-        viewModel.modelManager.availableMmprojModels.any { it.fileName in downloadedFiles }
-    }
-    Column(modifier = Modifier.fillMaxWidth().padding(24.dp).verticalScroll(rememberScrollState())) {
-        Text("Models & settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(
-            "Download models and manage your token",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-        Text(
-            "Token",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = tokenInput,
-            onValueChange = { tokenInput = it; viewModel.modelManager.hfToken = it },
-            placeholder = {
-                Text("hf_...", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            shape = MaterialTheme.shapes.medium,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                cursorColor = MaterialTheme.colorScheme.primary
-            )
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large,
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    val llmModels = viewModel.modelManager.availableLlmModels
+    val mmprojModels = viewModel.modelManager.availableMmprojModels
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.94f)
+            // Handle sits below status bar / camera cutout.
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .navigationBarsPadding()
+    ) {
+        // Drag affordance + chrome header (pinned; list scrolls underneath).
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp, bottom = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(modifier = Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .width(36.dp)
+                    .height(4.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f))
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "STATUS",
-                        style = MaterialTheme.typography.labelSmall,
+                        "Models & settings",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "Weights, vision, and access",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    val statusText = when(uiState) { is ChatUiState.Idle -> "Ready"; is ChatUiState.Loading -> "Loading"; is ChatUiState.Error -> "Error"; is ChatUiState.NoModel -> "No model"; else -> "Ready" }
-                    Text(
-                        statusText,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
                 }
-                if (llmReady && mmprojReady && uiState !is ChatUiState.Idle && uiState !is ChatUiState.Loading) {
-                    HealButton(
-                        text = "Load model",
-                        onClick = { viewModel.initializeEngine() },
-                        modifier = Modifier.width(140.dp)
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(GlassStyle.iconWell())
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
-        }
-        Spacer(modifier = Modifier.height(32.dp))
-        Text(
-            "LANGUAGE MODELS",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        viewModel.modelManager.availableLlmModels.forEach { model ->
-            ModelItem(
-                model = model,
-                isDownloaded = model.fileName in downloadedFiles,
-                downloadProgress = downloadProgress[model.fileName],
-                onDownload = { viewModel.downloadModel(model) },
-                onCancel = { viewModel.cancelDownload(model) }
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
             )
-            Spacer(modifier = Modifier.height(8.dp))
         }
-        Spacer(modifier = Modifier.height(24.dp))
-        Text(
-            "VISION COMPONENTS",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        viewModel.modelManager.availableMmprojModels.forEach { model ->
-            ModelItem(
-                model = model,
-                isDownloaded = model.fileName in downloadedFiles,
-                downloadProgress = downloadProgress[model.fileName],
-                onDownload = { viewModel.downloadModel(model) },
-                onCancel = { viewModel.cancelDownload(model) }
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item(key = "token", contentType = "token") {
+                Text(
+                    "Hugging Face token",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = {
+                        tokenInput = it
+                        viewModel.modelManager.hfToken = it
+                    },
+                    placeholder = {
+                        Text(
+                            "hf_… (optional for public models)",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                        unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                        focusedContainerColor = GlassStyle.field(),
+                        unfocusedContainerColor = GlassStyle.field(),
+                        cursorColor = MaterialTheme.colorScheme.onSurface
+                    )
+                )
+            }
+
+            item(key = "llm-header", contentType = "section") {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "Language models",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            items(
+                items = llmModels,
+                key = { it.fileName },
+                contentType = { "model" }
+            ) { model ->
+                ModelItem(
+                    model = model,
+                    isDownloaded = model.fileName in downloadedFiles,
+                    downloadProgress = downloadProgress[model.fileName],
+                    onDownload = { viewModel.downloadModel(model) },
+                    onCancel = { viewModel.cancelDownload(model) }
+                )
+            }
+
+            item(key = "mmproj-header", contentType = "section") {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "Vision projectors",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            items(
+                items = mmprojModels,
+                key = { it.fileName },
+                contentType = { "model" }
+            ) { model ->
+                ModelItem(
+                    model = model,
+                    isDownloaded = model.fileName in downloadedFiles,
+                    downloadProgress = downloadProgress[model.fileName],
+                    onDownload = { viewModel.downloadModel(model) },
+                    onCancel = { viewModel.cancelDownload(model) }
+                )
+            }
+
+            item(key = "footer-space") {
+                Spacer(modifier = Modifier.height(12.dp))
+            }
         }
-        Spacer(modifier = Modifier.height(32.dp))
     }
 }
 
@@ -994,79 +990,95 @@ fun ModelItem(
     onCancel: () -> Unit = {}
 ) {
     val isDownloading = downloadProgress?.isDownloading == true
-    Card(
+    val progress = downloadProgress?.progress ?: 0f
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isDownloaded) {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            } else {
-                MaterialTheme.colorScheme.surfaceContainer
-            }
-        ),
-        border = if (isDownloaded) {
-            androidx.compose.foundation.BorderStroke(
-                1.dp,
-                MaterialTheme.colorScheme.outlineVariant
-            )
-        } else null
+        shape = RoundedCornerShape(16.dp),
+        color = if (isDownloaded) GlassStyle.inset() else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f),
+        border = GlassStyle.border(if (isDownloaded) 0.12f else 0.08f)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         model.name,
-                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        model.fileName,
+                        buildString {
+                            append(model.sizeLabel.ifBlank { "GGUF" })
+                            if (model.sizeLabel.isNotBlank()) append(" · ")
+                            append(model.fileName.removeSuffix(".gguf").take(28))
+                            if (model.fileName.length > 32) append("…")
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
-                    if (model.sizeLabel.isNotBlank()) {
-                        Text(
-                            model.sizeLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
                 }
-                if (isDownloaded) {
-                    Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                } else if (isDownloading) {
-                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                Spacer(modifier = Modifier.width(8.dp))
+                when {
+                    isDownloaded -> {
                         Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Cancel download",
-                            tint = MaterialTheme.colorScheme.onSurface
+                            Icons.Default.CheckCircle,
+                            contentDescription = "Downloaded",
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                            modifier = Modifier.size(22.dp)
                         )
                     }
-                } else {
-                    IconButton(onClick = onDownload, modifier = Modifier.size(24.dp)) {
-                        Icon(
-                            Icons.Default.Download,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    isDownloading -> {
+                        IconButton(
+                            onClick = onCancel,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(GlassStyle.iconWell())
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Cancel download",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    else -> {
+                        IconButton(
+                            onClick = onDownload,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(GlassStyle.iconWell())
+                        ) {
+                            Icon(
+                                Icons.Default.Download,
+                                contentDescription = "Download ${model.name}",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
             }
             if (isDownloading) {
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 LinearProgressIndicator(
-                    progress = { downloadProgress?.progress ?: 0f },
+                    progress = { progress },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(2.dp)
+                        .height(3.dp)
                         .clip(CircleShape),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                    trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "${(progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -1084,8 +1096,215 @@ fun NeuralPulse(modifier: Modifier = Modifier) {
 }
 
 /**
- * Compact attachment preview inside the composer field — small rounded thumb +
- * glass remove badge, not a full-width block.
+ * Composer geometry — shared so attach, text, and send share one baseline.
+ *
+ *  • [ComposerHitSize]  — 48dp Material minimum touch target
+ *  • [ComposerGlyphSize] — filled disc / icon well diameter (visually balanced)
+ *  • [ComposerPillShape] — stadium corners matching half the resting height
+ */
+private val ComposerHitSize = 48.dp
+private val ComposerGlyphSize = 40.dp
+private val ComposerIconSize = 22.dp
+private val ComposerPillShape = RoundedCornerShape(26.dp)
+private val ComposerInnerPad = 6.dp
+
+/**
+ * Chat input bar: one glass pill with three perfectly aligned controls
+ * (attach · text · send/stop).
+ *
+ * Single-line: icons and text share a vertical center.
+ * Multi-line: row grows upward; icons stay bottom-aligned with the last line.
+ */
+@Composable
+private fun ChatComposerBar(
+    inputText: String,
+    onInputChange: (String) -> Unit,
+    selectedImageUri: Uri?,
+    onRemoveImage: () -> Unit,
+    isInputEnabled: Boolean,
+    isGenerating: Boolean,
+    canAttach: Boolean,
+    canSend: Boolean,
+    placeholder: String,
+    onAttach: () -> Unit,
+    onSendOrStop: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val fieldActive = isInputEnabled || isGenerating
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(
+                    animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
+                ),
+            shape = ComposerPillShape,
+            color = if (fieldActive) GlassStyle.field() else GlassStyle.fieldDisabled(),
+            border = GlassStyle.border(if (fieldActive) 0.12f else 0.07f),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(ComposerInnerPad)
+            ) {
+                AnimatedVisibility(visible = selectedImageUri != null) {
+                    selectedImageUri?.let { uri ->
+                        InputImageChip(
+                            uri = uri,
+                            onRemove = onRemoveImage,
+                            modifier = Modifier.padding(
+                                start = 6.dp,
+                                top = 4.dp,
+                                end = 6.dp,
+                                bottom = 6.dp
+                            )
+                        )
+                    }
+                }
+
+                // Three-slot row: equal hit targets on the ends, flexible text in the middle.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    // 1 — Attach
+                    ComposerSideButton(
+                        onClick = onAttach,
+                        enabled = canAttach,
+                        contentDescription = "Attach image",
+                        filled = false
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(ComposerIconSize)
+                        )
+                    }
+
+                    // 2 — Text
+                    val textColor = if (isInputEnabled) onSurface else onVariant
+                    BasicTextField(
+                        value = inputText,
+                        onValueChange = onInputChange,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = ComposerHitSize)
+                            .padding(horizontal = 6.dp),
+                        enabled = isInputEnabled,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = textColor,
+                            lineHeight = 22.sp
+                        ),
+                        cursorBrush = SolidColor(onSurface),
+                        maxLines = 5,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                if (canSend && !isGenerating) onSendOrStop()
+                            }
+                        ),
+                        decorationBox = { innerTextField ->
+                            // 13dp vertical padding centers bodyLarge (~22sp line) in 48dp.
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = ComposerHitSize)
+                                    .padding(vertical = 13.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (inputText.isEmpty()) {
+                                    Text(
+                                        text = placeholder,
+                                        color = onVariant.copy(alpha = 0.58f),
+                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                            lineHeight = 22.sp
+                                        ),
+                                        maxLines = 1
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+
+                    // 3 — Send / stop
+                    SendHaltButton(
+                        isGenerating = isGenerating,
+                        enabled = canSend,
+                        onClick = onSendOrStop
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Side control (attach): 48dp hit target, 40dp quiet circular well so it
+ * mirrors the send disc and both sit on the same visual baseline.
+ */
+@Composable
+private fun ComposerSideButton(
+    onClick: () -> Unit,
+    enabled: Boolean,
+    contentDescription: String,
+    filled: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val contentColor = if (enabled) {
+        MaterialTheme.colorScheme.onSurface
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+    }
+
+    Box(
+        modifier = modifier
+            .size(ComposerHitSize)
+            .semantics {
+                role = Role.Button
+                this.contentDescription = contentDescription
+            }
+            .clickable(
+                enabled = enabled,
+                interactionSource = interaction,
+                indication = ripple(bounded = false, radius = 24.dp),
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(ComposerGlyphSize)
+                .clip(CircleShape)
+                .background(
+                    if (filled) GlassStyle.iconWell()
+                    else Color.Transparent
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            CompositionLocalProvider(
+                LocalContentColor provides contentColor
+            ) {
+                content()
+            }
+        }
+    }
+}
+
+/**
+ * Attachment thumbnail — rounded square with a clean remove affordance.
  */
 @Composable
 private fun InputImageChip(
@@ -1094,56 +1313,42 @@ private fun InputImageChip(
     modifier: Modifier = Modifier
 ) {
     val thumbShape = RoundedCornerShape(12.dp)
+    val chipContext = LocalContext.current
     Box(modifier = modifier) {
         Box(
             modifier = Modifier
-                .padding(top = 4.dp, end = 6.dp)
-                .size(width = 56.dp, height = 56.dp)
+                .padding(top = 4.dp, end = 10.dp)
+                .size(56.dp)
                 .clip(thumbShape)
                 .border(GlassStyle.border(0.14f), thumbShape)
                 .background(GlassStyle.inset())
         ) {
-            val chipContext = LocalContext.current
             AsyncImage(
                 model = ImageRequest.Builder(chipContext)
                     .data(uri)
-                    .size(168) // 56dp @ 3x — avoid full-res decode for composer chip
+                    .size(168)
                     .crossfade(false)
                     .build(),
                 contentDescription = "Attached image",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop
             )
-            // Soft bottom scrim so the thumb reads as a chip, not a raw crop.
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(16.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                MaterialTheme.colorScheme.scrim.copy(alpha = 0.28f)
-                            )
-                        )
-                    )
-            )
         }
+        // Remove — always reachable 48dp? visual 22dp is fine for secondary chip action
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .size(20.dp)
+                .size(24.dp)
                 .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
                 .border(GlassStyle.border(0.16f), CircleShape)
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
                 .clickable(onClick = onRemove),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Default.Close,
                 contentDescription = "Remove image",
-                modifier = Modifier.size(12.dp),
+                modifier = Modifier.size(13.dp),
                 tint = MaterialTheme.colorScheme.onSurface
             )
         }
@@ -1151,11 +1356,10 @@ private fun InputImageChip(
 }
 
 /**
- * Send / halt control.
- *
- * Idle + ready: solid monochrome disc with send chevron.
- * Generating: glass disc, soft dual orbital arcs (tokens in flight), and a small
- * rounded square halt glyph — no alarm red; the motion is the signal.
+ * Send / halt — same 48dp hit target as attach.
+ * Idle/disabled: soft well + muted arrow.
+ * Ready: filled monochrome disc + inverted arrow.
+ * Generating: orbit + stop square (quiet monochrome, no red).
  */
 @Composable
 private fun SendHaltButton(
@@ -1166,24 +1370,35 @@ private fun SendHaltButton(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val surface = MaterialTheme.colorScheme.surface
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val interaction = remember { MutableInteractionSource() }
+
+    // Cross-fade the disc fill when send becomes available — snappy, not flashy.
+    val fillAlpha by animateFloatAsState(
+        targetValue = when {
+            isGenerating -> 0.14f
+            enabled -> 1f
+            else -> 0.14f
+        },
+        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        label = "send-fill"
+    )
+    val isFilled = enabled && !isGenerating
 
     val infinite = rememberInfiniteTransition(label = "halt-orbit")
     val orbit by infinite.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1600, easing = LinearEasing),
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "orbit"
     )
     val breath by infinite.animateFloat(
-        initialValue = 0.28f,
-        targetValue = 0.72f,
+        initialValue = 0.30f,
+        targetValue = 0.75f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 850, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "breath"
@@ -1191,88 +1406,100 @@ private fun SendHaltButton(
 
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(ComposerHitSize)
             .semantics {
                 role = Role.Button
                 contentDescription = if (isGenerating) "Stop generating" else "Send message"
             }
-            .clip(CircleShape)
-            .then(
-                when {
-                    isGenerating -> Modifier
-                        .border(GlassStyle.border(0.16f), CircleShape)
-                        .background(GlassStyle.iconWell())
-                    enabled -> Modifier.background(onSurface)
-                    else -> Modifier
-                        .border(GlassStyle.border(0.10f), CircleShape)
-                        .background(GlassStyle.iconWell())
-                }
-            )
             .clickable(
                 enabled = enabled,
                 interactionSource = interaction,
-                indication = ripple(bounded = true, radius = 22.dp),
+                indication = ripple(bounded = false, radius = 24.dp),
                 onClick = onClick
             ),
         contentAlignment = Alignment.Center
     ) {
-        AnimatedContent(
-            targetState = isGenerating,
-            transitionSpec = {
-                (fadeIn(tween(160)) + scaleIn(initialScale = 0.82f, animationSpec = tween(180)))
-                    .togetherWith(
-                        fadeOut(tween(120)) + scaleOut(targetScale = 0.82f, animationSpec = tween(120))
-                    )
-            },
-            label = "send-halt"
-        ) { generating ->
-            if (generating) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(4.dp)
-                            .graphicsLayer { rotationZ = orbit }
-                    ) {
-                        val stroke = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
-                        val inset = stroke.width / 2f
-                        val arcSize = Size(size.width - stroke.width, size.height - stroke.width)
-                        val topLeft = Offset(inset, inset)
-                        // Two opposing arcs read as a token stream orbiting the halt square.
-                        drawArc(
-                            color = onSurface.copy(alpha = breath),
-                            startAngle = -20f,
-                            sweepAngle = 78f,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = stroke
+        // Visual disc — identical diameter to attach well so the pair is symmetric.
+        Box(
+            modifier = Modifier
+                .size(ComposerGlyphSize)
+                .clip(CircleShape)
+                .background(
+                    if (isFilled) onSurface
+                    else onSurface.copy(alpha = fillAlpha)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            AnimatedContent(
+                targetState = isGenerating,
+                transitionSpec = {
+                    (fadeIn(tween(120)) + scaleIn(initialScale = 0.90f, animationSpec = tween(140)))
+                        .togetherWith(
+                            fadeOut(tween(90)) +
+                                scaleOut(targetScale = 0.90f, animationSpec = tween(90))
                         )
-                        drawArc(
-                            color = onSurface.copy(alpha = breath * 0.45f),
-                            startAngle = 160f,
-                            sweepAngle = 52f,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = stroke
+                },
+                label = "send-halt"
+            ) { generating ->
+                if (generating) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(6.dp)
+                                .graphicsLayer { rotationZ = orbit }
+                        ) {
+                            val stroke = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
+                            val inset = stroke.width / 2f
+                            val arcSize = Size(
+                                size.width - stroke.width,
+                                size.height - stroke.width
+                            )
+                            val topLeft = Offset(inset, inset)
+                            drawArc(
+                                color = onSurface.copy(alpha = breath),
+                                startAngle = -18f,
+                                sweepAngle = 72f,
+                                useCenter = false,
+                                topLeft = topLeft,
+                                size = arcSize,
+                                style = stroke
+                            )
+                            drawArc(
+                                color = onSurface.copy(alpha = breath * 0.4f),
+                                startAngle = 165f,
+                                sweepAngle = 48f,
+                                useCenter = false,
+                                topLeft = topLeft,
+                                size = arcSize,
+                                style = stroke
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(onSurface)
                         )
                     }
-                    // Soft stop glyph — rounded square, same family as glass chrome.
-                    Box(
+                } else {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        tint = if (isFilled) {
+                            surface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                        },
+                        // Optical nudge: Send glyph is heavier on the right.
                         modifier = Modifier
-                            .size(11.dp)
-                            .clip(RoundedCornerShape(2.5.dp))
-                            .background(onSurface)
+                            .size(18.dp)
+                            .padding(start = 1.dp)
                     )
                 }
-            } else {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = null,
-                    tint = if (enabled) surface else muted,
-                    modifier = Modifier.size(18.dp)
-                )
             }
         }
     }
