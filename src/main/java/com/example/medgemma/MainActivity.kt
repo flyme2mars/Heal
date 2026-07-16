@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -63,6 +64,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -554,130 +556,48 @@ fun ChatScreen(
             )
         }
 
-        Column(
+        ChatComposerBar(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onSizeChanged { bottomBarHeightPx = it.height }
                 .frostedGlassBar(hazeState, soft = softHaze)
                 .imePadding()
-                .navigationBarsPadding()
-        ) {
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-            )
-            Row(
-                modifier = Modifier
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .fillMaxWidth(),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                FilledTonalIconButton(
-                    onClick = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
-                    enabled = uiState is ChatUiState.Idle && !isGenerating,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .border(GlassStyle.border(0.10f), CircleShape),
-                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                        containerColor = GlassStyle.iconWell(),
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        disabledContainerColor = GlassStyle.fieldDisabled(),
-                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) {
-                    Icon(
-                        Icons.Default.Image,
-                        contentDescription = "Attach image",
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                val inputPlaceholder = when (uiState) {
-                    is ChatUiState.NoModel -> "Download a model to chat…"
-                    is ChatUiState.ModelAvailable -> "Load model to chat…"
-                    is ChatUiState.Loading -> if (messages.isEmpty()) "Loading model…" else "Heal is responding…"
-                    is ChatUiState.Error -> "Fix error in settings…"
-                    is ChatUiState.Idle -> "Message Heal…"
-                }
-                val fieldShape = RoundedCornerShape(22.dp)
-                // Composer field: compact image chip sits inside the glass field, not a huge block above.
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .border(GlassStyle.border(0.10f), fieldShape)
-                        .clip(fieldShape)
-                        .background(
-                            if (isInputEnabled) GlassStyle.field() else GlassStyle.fieldDisabled()
-                        )
-                        .animateContentSize()
-                ) {
-                    AnimatedVisibility(visible = selectedImageUri != null) {
-                        selectedImageUri?.let { uri ->
-                            InputImageChip(
-                                uri = uri,
-                                onRemove = {
-                                    selectedImageUri = null
-                                    imageBytes = null
-                                },
-                                modifier = Modifier.padding(start = 10.dp, top = 10.dp, end = 10.dp)
-                            )
-                        }
-                    }
-                    TextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = {
-                            Text(
-                                inputPlaceholder,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        },
-                        shape = fieldShape,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            disabledContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            disabledIndicatorColor = Color.Transparent,
-                            cursorColor = MaterialTheme.colorScheme.onSurface,
-                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        ),
-                        enabled = isInputEnabled,
-                        maxLines = 5,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(
-                            onSend = {
-                                if (inputText.isNotBlank() || imageBytes != null) sendCurrentMessage()
-                            }
-                        )
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                val isSendEnabled = (uiState is ChatUiState.Idle || isGenerating) &&
-                    (inputText.isNotBlank() || imageBytes != null || isGenerating)
-                SendHaltButton(
-                    isGenerating = isGenerating,
-                    enabled = isSendEnabled,
-                    onClick = {
-                        if (isGenerating) {
-                            view.performHapticFeedback(HapticFeedbackConstants.REJECT)
-                            viewModel.stopGeneration()
-                        } else if (isSendEnabled) {
-                            sendCurrentMessage()
-                        }
-                    }
+                .navigationBarsPadding(),
+            inputText = inputText,
+            onInputChange = { inputText = it },
+            selectedImageUri = selectedImageUri,
+            onRemoveImage = {
+                selectedImageUri = null
+                imageBytes = null
+            },
+            isInputEnabled = isInputEnabled,
+            isGenerating = isGenerating,
+            canAttach = uiState is ChatUiState.Idle && !isGenerating,
+            canSend = (uiState is ChatUiState.Idle || isGenerating) &&
+                (inputText.isNotBlank() || imageBytes != null || isGenerating),
+            placeholder = when (uiState) {
+                is ChatUiState.NoModel -> "Download a model to chat…"
+                is ChatUiState.ModelAvailable -> "Load model to chat…"
+                is ChatUiState.Loading ->
+                    if (messages.isEmpty()) "Loading model…" else "Heal is responding…"
+                is ChatUiState.Error -> "Fix error in settings…"
+                is ChatUiState.Idle -> "Message Heal…"
+            },
+            onAttach = {
+                photoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                 )
+            },
+            onSendOrStop = {
+                if (isGenerating) {
+                    view.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                    viewModel.stopGeneration()
+                } else {
+                    sendCurrentMessage()
+                }
             }
-        }
+        )
 
         SnackbarHost(
             hostState = snackbarHostState,
@@ -1176,8 +1096,215 @@ fun NeuralPulse(modifier: Modifier = Modifier) {
 }
 
 /**
- * Compact attachment preview inside the composer field — small rounded thumb +
- * glass remove badge, not a full-width block.
+ * Composer geometry — shared so attach, text, and send share one baseline.
+ *
+ *  • [ComposerHitSize]  — 48dp Material minimum touch target
+ *  • [ComposerGlyphSize] — filled disc / icon well diameter (visually balanced)
+ *  • [ComposerPillShape] — stadium corners matching half the resting height
+ */
+private val ComposerHitSize = 48.dp
+private val ComposerGlyphSize = 40.dp
+private val ComposerIconSize = 22.dp
+private val ComposerPillShape = RoundedCornerShape(26.dp)
+private val ComposerInnerPad = 6.dp
+
+/**
+ * Chat input bar: one glass pill with three perfectly aligned controls
+ * (attach · text · send/stop).
+ *
+ * Single-line: icons and text share a vertical center.
+ * Multi-line: row grows upward; icons stay bottom-aligned with the last line.
+ */
+@Composable
+private fun ChatComposerBar(
+    inputText: String,
+    onInputChange: (String) -> Unit,
+    selectedImageUri: Uri?,
+    onRemoveImage: () -> Unit,
+    isInputEnabled: Boolean,
+    isGenerating: Boolean,
+    canAttach: Boolean,
+    canSend: Boolean,
+    placeholder: String,
+    onAttach: () -> Unit,
+    onSendOrStop: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val fieldActive = isInputEnabled || isGenerating
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(
+                    animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
+                ),
+            shape = ComposerPillShape,
+            color = if (fieldActive) GlassStyle.field() else GlassStyle.fieldDisabled(),
+            border = GlassStyle.border(if (fieldActive) 0.12f else 0.07f),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(ComposerInnerPad)
+            ) {
+                AnimatedVisibility(visible = selectedImageUri != null) {
+                    selectedImageUri?.let { uri ->
+                        InputImageChip(
+                            uri = uri,
+                            onRemove = onRemoveImage,
+                            modifier = Modifier.padding(
+                                start = 6.dp,
+                                top = 4.dp,
+                                end = 6.dp,
+                                bottom = 6.dp
+                            )
+                        )
+                    }
+                }
+
+                // Three-slot row: equal hit targets on the ends, flexible text in the middle.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    // 1 — Attach
+                    ComposerSideButton(
+                        onClick = onAttach,
+                        enabled = canAttach,
+                        contentDescription = "Attach image",
+                        filled = false
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(ComposerIconSize)
+                        )
+                    }
+
+                    // 2 — Text
+                    val textColor = if (isInputEnabled) onSurface else onVariant
+                    BasicTextField(
+                        value = inputText,
+                        onValueChange = onInputChange,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = ComposerHitSize)
+                            .padding(horizontal = 6.dp),
+                        enabled = isInputEnabled,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = textColor,
+                            lineHeight = 22.sp
+                        ),
+                        cursorBrush = SolidColor(onSurface),
+                        maxLines = 5,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                if (canSend && !isGenerating) onSendOrStop()
+                            }
+                        ),
+                        decorationBox = { innerTextField ->
+                            // 13dp vertical padding centers bodyLarge (~22sp line) in 48dp.
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = ComposerHitSize)
+                                    .padding(vertical = 13.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (inputText.isEmpty()) {
+                                    Text(
+                                        text = placeholder,
+                                        color = onVariant.copy(alpha = 0.58f),
+                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                            lineHeight = 22.sp
+                                        ),
+                                        maxLines = 1
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+
+                    // 3 — Send / stop
+                    SendHaltButton(
+                        isGenerating = isGenerating,
+                        enabled = canSend,
+                        onClick = onSendOrStop
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Side control (attach): 48dp hit target, 40dp quiet circular well so it
+ * mirrors the send disc and both sit on the same visual baseline.
+ */
+@Composable
+private fun ComposerSideButton(
+    onClick: () -> Unit,
+    enabled: Boolean,
+    contentDescription: String,
+    filled: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val contentColor = if (enabled) {
+        MaterialTheme.colorScheme.onSurface
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+    }
+
+    Box(
+        modifier = modifier
+            .size(ComposerHitSize)
+            .semantics {
+                role = Role.Button
+                this.contentDescription = contentDescription
+            }
+            .clickable(
+                enabled = enabled,
+                interactionSource = interaction,
+                indication = ripple(bounded = false, radius = 24.dp),
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(ComposerGlyphSize)
+                .clip(CircleShape)
+                .background(
+                    if (filled) GlassStyle.iconWell()
+                    else Color.Transparent
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            CompositionLocalProvider(
+                LocalContentColor provides contentColor
+            ) {
+                content()
+            }
+        }
+    }
+}
+
+/**
+ * Attachment thumbnail — rounded square with a clean remove affordance.
  */
 @Composable
 private fun InputImageChip(
@@ -1186,56 +1313,42 @@ private fun InputImageChip(
     modifier: Modifier = Modifier
 ) {
     val thumbShape = RoundedCornerShape(12.dp)
+    val chipContext = LocalContext.current
     Box(modifier = modifier) {
         Box(
             modifier = Modifier
-                .padding(top = 4.dp, end = 6.dp)
-                .size(width = 56.dp, height = 56.dp)
+                .padding(top = 4.dp, end = 10.dp)
+                .size(56.dp)
                 .clip(thumbShape)
                 .border(GlassStyle.border(0.14f), thumbShape)
                 .background(GlassStyle.inset())
         ) {
-            val chipContext = LocalContext.current
             AsyncImage(
                 model = ImageRequest.Builder(chipContext)
                     .data(uri)
-                    .size(168) // 56dp @ 3x — avoid full-res decode for composer chip
+                    .size(168)
                     .crossfade(false)
                     .build(),
                 contentDescription = "Attached image",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop
             )
-            // Soft bottom scrim so the thumb reads as a chip, not a raw crop.
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(16.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                MaterialTheme.colorScheme.scrim.copy(alpha = 0.28f)
-                            )
-                        )
-                    )
-            )
         }
+        // Remove — always reachable 48dp? visual 22dp is fine for secondary chip action
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .size(20.dp)
+                .size(24.dp)
                 .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
                 .border(GlassStyle.border(0.16f), CircleShape)
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
                 .clickable(onClick = onRemove),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Default.Close,
                 contentDescription = "Remove image",
-                modifier = Modifier.size(12.dp),
+                modifier = Modifier.size(13.dp),
                 tint = MaterialTheme.colorScheme.onSurface
             )
         }
@@ -1243,11 +1356,10 @@ private fun InputImageChip(
 }
 
 /**
- * Send / halt control.
- *
- * Idle + ready: solid monochrome disc with send chevron.
- * Generating: glass disc, soft dual orbital arcs (tokens in flight), and a small
- * rounded square halt glyph — no alarm red; the motion is the signal.
+ * Send / halt — same 48dp hit target as attach.
+ * Idle/disabled: soft well + muted arrow.
+ * Ready: filled monochrome disc + inverted arrow.
+ * Generating: orbit + stop square (quiet monochrome, no red).
  */
 @Composable
 private fun SendHaltButton(
@@ -1258,24 +1370,35 @@ private fun SendHaltButton(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val surface = MaterialTheme.colorScheme.surface
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val interaction = remember { MutableInteractionSource() }
+
+    // Cross-fade the disc fill when send becomes available — snappy, not flashy.
+    val fillAlpha by animateFloatAsState(
+        targetValue = when {
+            isGenerating -> 0.14f
+            enabled -> 1f
+            else -> 0.14f
+        },
+        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        label = "send-fill"
+    )
+    val isFilled = enabled && !isGenerating
 
     val infinite = rememberInfiniteTransition(label = "halt-orbit")
     val orbit by infinite.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1600, easing = LinearEasing),
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "orbit"
     )
     val breath by infinite.animateFloat(
-        initialValue = 0.28f,
-        targetValue = 0.72f,
+        initialValue = 0.30f,
+        targetValue = 0.75f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 850, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "breath"
@@ -1283,88 +1406,100 @@ private fun SendHaltButton(
 
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(ComposerHitSize)
             .semantics {
                 role = Role.Button
                 contentDescription = if (isGenerating) "Stop generating" else "Send message"
             }
-            .clip(CircleShape)
-            .then(
-                when {
-                    isGenerating -> Modifier
-                        .border(GlassStyle.border(0.16f), CircleShape)
-                        .background(GlassStyle.iconWell())
-                    enabled -> Modifier.background(onSurface)
-                    else -> Modifier
-                        .border(GlassStyle.border(0.10f), CircleShape)
-                        .background(GlassStyle.iconWell())
-                }
-            )
             .clickable(
                 enabled = enabled,
                 interactionSource = interaction,
-                indication = ripple(bounded = true, radius = 22.dp),
+                indication = ripple(bounded = false, radius = 24.dp),
                 onClick = onClick
             ),
         contentAlignment = Alignment.Center
     ) {
-        AnimatedContent(
-            targetState = isGenerating,
-            transitionSpec = {
-                (fadeIn(tween(160)) + scaleIn(initialScale = 0.82f, animationSpec = tween(180)))
-                    .togetherWith(
-                        fadeOut(tween(120)) + scaleOut(targetScale = 0.82f, animationSpec = tween(120))
-                    )
-            },
-            label = "send-halt"
-        ) { generating ->
-            if (generating) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(4.dp)
-                            .graphicsLayer { rotationZ = orbit }
-                    ) {
-                        val stroke = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
-                        val inset = stroke.width / 2f
-                        val arcSize = Size(size.width - stroke.width, size.height - stroke.width)
-                        val topLeft = Offset(inset, inset)
-                        // Two opposing arcs read as a token stream orbiting the halt square.
-                        drawArc(
-                            color = onSurface.copy(alpha = breath),
-                            startAngle = -20f,
-                            sweepAngle = 78f,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = stroke
+        // Visual disc — identical diameter to attach well so the pair is symmetric.
+        Box(
+            modifier = Modifier
+                .size(ComposerGlyphSize)
+                .clip(CircleShape)
+                .background(
+                    if (isFilled) onSurface
+                    else onSurface.copy(alpha = fillAlpha)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            AnimatedContent(
+                targetState = isGenerating,
+                transitionSpec = {
+                    (fadeIn(tween(120)) + scaleIn(initialScale = 0.90f, animationSpec = tween(140)))
+                        .togetherWith(
+                            fadeOut(tween(90)) +
+                                scaleOut(targetScale = 0.90f, animationSpec = tween(90))
                         )
-                        drawArc(
-                            color = onSurface.copy(alpha = breath * 0.45f),
-                            startAngle = 160f,
-                            sweepAngle = 52f,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = stroke
+                },
+                label = "send-halt"
+            ) { generating ->
+                if (generating) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(6.dp)
+                                .graphicsLayer { rotationZ = orbit }
+                        ) {
+                            val stroke = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
+                            val inset = stroke.width / 2f
+                            val arcSize = Size(
+                                size.width - stroke.width,
+                                size.height - stroke.width
+                            )
+                            val topLeft = Offset(inset, inset)
+                            drawArc(
+                                color = onSurface.copy(alpha = breath),
+                                startAngle = -18f,
+                                sweepAngle = 72f,
+                                useCenter = false,
+                                topLeft = topLeft,
+                                size = arcSize,
+                                style = stroke
+                            )
+                            drawArc(
+                                color = onSurface.copy(alpha = breath * 0.4f),
+                                startAngle = 165f,
+                                sweepAngle = 48f,
+                                useCenter = false,
+                                topLeft = topLeft,
+                                size = arcSize,
+                                style = stroke
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(onSurface)
                         )
                     }
-                    // Soft stop glyph — rounded square, same family as glass chrome.
-                    Box(
+                } else {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        tint = if (isFilled) {
+                            surface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                        },
+                        // Optical nudge: Send glyph is heavier on the right.
                         modifier = Modifier
-                            .size(11.dp)
-                            .clip(RoundedCornerShape(2.5.dp))
-                            .background(onSurface)
+                            .size(18.dp)
+                            .padding(start = 1.dp)
                     )
                 }
-            } else {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = null,
-                    tint = if (enabled) surface else muted,
-                    modifier = Modifier.size(18.dp)
-                )
             }
         }
     }
