@@ -98,6 +98,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1098,22 +1099,40 @@ fun NeuralPulse(modifier: Modifier = Modifier) {
 /**
  * Composer geometry — shared so attach, text, and send share one baseline.
  *
- *  • [ComposerHitSize]  — 48dp Material minimum touch target
- *  • [ComposerGlyphSize] — filled disc / icon well diameter (visually balanced)
- *  • [ComposerPillShape] — stadium corners matching half the resting height
+ *  • [ComposerHitSize]  — compact resting height (keyboard closed)
+ *  • [ComposerExpandedMinHeight] — roomier field while IME is open
+ *  • [ComposerGlyphSize] — filled disc / icon well diameter
  */
 private val ComposerHitSize = 48.dp
+private val ComposerExpandedMinHeight = 92.dp
 private val ComposerGlyphSize = 40.dp
 private val ComposerIconSize = 22.dp
 private val ComposerPillShape = RoundedCornerShape(26.dp)
 private val ComposerInnerPad = 6.dp
+/**
+ * Top pad so the first text line (~22sp) optically centers with the 48dp
+ * side buttons. Bottom pad keeps multi-line content from hugging the edge.
+ */
+private val ComposerTextPadTop = 13.dp
+private val ComposerTextPadBottom = 13.dp
+
+/**
+ * Snappy IME expand — short ease-out only.
+ * Do **not** combine with [animateContentSize] on the same height change;
+ * two overlapping size animations read as lag.
+ */
+private val ComposerExpandDpSpec = tween<Dp>(
+    durationMillis = 120,
+    easing = FastOutSlowInEasing
+)
 
 /**
  * Chat input bar: one glass pill with three perfectly aligned controls
  * (attach · text · send/stop).
  *
- * Single-line: icons and text share a vertical center.
- * Multi-line: row grows upward; icons stay bottom-aligned with the last line.
+ * Keyboard closed: compact single-line height.
+ * Keyboard open: field expands; text + placeholder start at the **top**,
+ * side actions stay on the first-line baseline, extra space grows below.
  */
 @Composable
 private fun ChatComposerBar(
@@ -1133,6 +1152,15 @@ private fun ChatComposerBar(
     val fieldActive = isInputEnabled || isGenerating
     val onSurface = MaterialTheme.colorScheme.onSurface
     val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    val density = LocalDensity.current
+
+    // True while the soft keyboard is visible (after imePadding is applied).
+    val imeOpen = WindowInsets.ime.getBottom(density) > 0
+    val fieldMinHeight by animateDpAsState(
+        targetValue = if (imeOpen) ComposerExpandedMinHeight else ComposerHitSize,
+        animationSpec = ComposerExpandDpSpec,
+        label = "composer-field-min"
+    )
 
     Box(
         modifier = modifier
@@ -1140,11 +1168,7 @@ private fun ChatComposerBar(
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .animateContentSize(
-                    animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
-                ),
+            modifier = Modifier.fillMaxWidth(),
             shape = ComposerPillShape,
             color = if (fieldActive) GlassStyle.field() else GlassStyle.fieldDisabled(),
             border = GlassStyle.border(if (fieldActive) 0.12f else 0.07f),
@@ -1171,13 +1195,15 @@ private fun ChatComposerBar(
                     }
                 }
 
-                // Three-slot row: equal hit targets on the ends, flexible text in the middle.
+                // Top-aligned: first text line, placeholder, attach, and send share one row.
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Bottom,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = fieldMinHeight),
+                    verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    // 1 — Attach
+                    // 1 — Attach (sits on first-line baseline)
                     ComposerSideButton(
                         onClick = onAttach,
                         enabled = canAttach,
@@ -1191,14 +1217,14 @@ private fun ChatComposerBar(
                         )
                     }
 
-                    // 2 — Text
+                    // 2 — Text: always grows downward from the top
                     val textColor = if (isInputEnabled) onSurface else onVariant
                     BasicTextField(
                         value = inputText,
                         onValueChange = onInputChange,
                         modifier = Modifier
                             .weight(1f)
-                            .heightIn(min = ComposerHitSize)
+                            .heightIn(min = fieldMinHeight)
                             .padding(horizontal = 6.dp),
                         enabled = isInputEnabled,
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
@@ -1206,7 +1232,7 @@ private fun ChatComposerBar(
                             lineHeight = 22.sp
                         ),
                         cursorBrush = SolidColor(onSurface),
-                        maxLines = 5,
+                        maxLines = 6,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(
                             onSend = {
@@ -1214,14 +1240,17 @@ private fun ChatComposerBar(
                             }
                         ),
                         decorationBox = { innerTextField ->
-                            // 13dp vertical padding centers bodyLarge (~22sp line) in 48dp.
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(min = ComposerHitSize)
-                                    .padding(vertical = 13.dp),
-                                contentAlignment = Alignment.CenterStart
+                                    .heightIn(min = fieldMinHeight)
+                                    .padding(
+                                        top = ComposerTextPadTop,
+                                        bottom = ComposerTextPadBottom
+                                    ),
+                                contentAlignment = Alignment.TopStart
                             ) {
+                                // Placeholder stacked on the same origin as the caret.
                                 if (inputText.isEmpty()) {
                                     Text(
                                         text = placeholder,
@@ -1237,7 +1266,7 @@ private fun ChatComposerBar(
                         }
                     )
 
-                    // 3 — Send / stop
+                    // 3 — Send / stop (same top baseline as attach)
                     SendHaltButton(
                         isGenerating = isGenerating,
                         enabled = canSend,
