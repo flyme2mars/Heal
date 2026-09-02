@@ -22,8 +22,6 @@ data class SnackbarMessage(
 data class ChatMessage(
     val content: String,
     val isUser: Boolean,
-    val thought: String? = null,
-    val stats: String? = null,
     val imageUri: android.net.Uri? = null
 )
 
@@ -37,7 +35,7 @@ sealed class ChatUiState {
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val ggufManager = GgufInferenceManager(application)
-    val modelManager = ModelManager(application)
+    private val modelManager = ModelManager()
     private val _messages = mutableStateListOf<ChatMessage>()
     val messages: List<ChatMessage> = _messages
     private val _uiState = MutableStateFlow<ChatUiState>(ChatUiState.NoModel)
@@ -142,19 +140,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun downloadModel(model: GgufModel) {
-        viewModelScope.launch {
-            modelManager.downloadModel(model)
-            checkModelStatus()
-            // Auto-load after download only once UI has already been ready this session.
-            maybeAutoLoadEngine()
-        }
-    }
-
-    fun cancelDownload(model: GgufModel) {
-        modelManager.cancelDownload(model.fileName)
-    }
-
     fun sendMessage(text: String, imageBytes: ByteArray? = null, imageUri: android.net.Uri? = null) {
         if (text.isBlank() && imageBytes == null) return
         if (!ggufManager.isInitialized) return
@@ -189,11 +174,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             val buffer = StreamContentBuffer()
             fun applyUi(action: StreamContentBuffer.Action.UpdateUi) {
-                _messages[assistantIndex] = assistantMessage.copy(
-                    content = action.content,
-                    thought = action.thought,
-                    stats = action.stats
-                )
+                _messages[assistantIndex] = assistantMessage.copy(content = action.content)
             }
 
             // map+flowOn: accept/buffer on Default; collect (UI) stays on Main.

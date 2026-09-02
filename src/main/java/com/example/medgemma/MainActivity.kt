@@ -23,8 +23,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -293,9 +291,7 @@ fun ChatScreen(
     LaunchedEffect(isGenerating) {
         if (!isGenerating) return@LaunchedEffect
         snapshotFlow {
-            messages.lastOrNull()?.let { msg ->
-                msg.content.length + (msg.thought?.length ?: 0)
-            } ?: 0
+            messages.lastOrNull()?.content?.length ?: 0
         }.collect {
             if (autoScrollEnabled && messages.isNotEmpty()) {
                 scrollChatToLatest(animated = false)
@@ -387,8 +383,7 @@ fun ChatScreen(
                     message = message,
                     isStreaming = isGenerating &&
                         index == messages.lastIndex &&
-                        !message.isUser &&
-                        message.stats == null
+                        !message.isUser
                 )
             }
             if (uiState is ChatUiState.Idle && messages.isEmpty()) {
@@ -534,18 +529,8 @@ fun ChatScreen(
                     end = 16.dp,
                     bottom = with(density) { bottomBarHeightPx.toDp() } + 14.dp
                 ),
-            enter = if (reducedMotion) {
-                fadeIn(motionTween(jumpDuration))
-            } else {
-                fadeIn(motionTween(jumpDuration)) +
-                    scaleIn(initialScale = 0.92f, animationSpec = motionTween(jumpDuration))
-            },
-            exit = if (reducedMotion) {
-                fadeOut(motionTween(jumpDuration))
-            } else {
-                fadeOut(motionTween(jumpDuration)) +
-                    scaleOut(targetScale = 0.92f, animationSpec = motionTween(jumpDuration))
-            }
+            enter = fadeIn(motionTween(jumpDuration)),
+            exit = fadeOut(motionTween(jumpDuration))
         ) {
             Surface(
                 modifier = Modifier
@@ -1044,19 +1029,7 @@ private fun SendHaltButton(
             AnimatedContent(
                 targetState = isGenerating,
                 transitionSpec = {
-                    val enter = if (reducedMotion) {
-                        fadeIn(motionTween(swapMs))
-                    } else {
-                        fadeIn(motionTween(swapMs)) +
-                            scaleIn(initialScale = 0.92f, animationSpec = motionTween(swapMs))
-                    }
-                    val exit = if (reducedMotion) {
-                        fadeOut(motionTween(swapMs))
-                    } else {
-                        fadeOut(motionTween(swapMs)) +
-                            scaleOut(targetScale = 0.92f, animationSpec = motionTween(swapMs))
-                    }
-                    enter.togetherWith(exit)
+                    fadeIn(motionTween(swapMs)).togetherWith(fadeOut(motionTween(swapMs)))
                 },
                 label = "send-halt"
             ) { generating ->
