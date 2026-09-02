@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   assemble-debug:
@@ -84,3 +84,27 @@ jobs:
           path: build/outputs/apk/debug/MedGemma-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      # One rolling pre-release so phones can download without the Actions UI.
+      # Same-repo runs only; fork PRs do not get a writable GITHUB_TOKEN.
+      - name: Publish debug-latest pre-release
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          APK="build/outputs/apk/debug/MedGemma-debug.apk"
+          NOTES="$(printf '%s\n\n%s\n\n%s\n' \
+            "Debug APK from \`${RELEASE_TARGET}\`." \
+            "Models are not included. Push GGUFs to the device with adb (see README)." \
+            "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+          gh release delete debug-latest --yes || true
+          git push origin :refs/tags/debug-latest || true
+          gh release create debug-latest \
+            "${APK}" \
+            --title "Debug APK (latest)" \
+            --notes "${NOTES}" \
+            --prerelease \
+            --latest=false \
+            --target "${RELEASE_TARGET}"
