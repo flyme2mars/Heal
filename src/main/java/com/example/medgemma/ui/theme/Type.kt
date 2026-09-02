@@ -30,7 +30,7 @@ val HealTypography = Typography(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
         fontSize = 16.sp,
-        lineHeight = 24.sp,
+        lineHeight = 22.sp,
         letterSpacing = 0.15.sp
     ),
     bodyMedium = TextStyle(

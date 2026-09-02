@@ -1,11 +1,13 @@
 package com.example.medgemma
 
+import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -21,10 +23,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -43,13 +42,11 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
@@ -61,12 +58,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -80,11 +73,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import com.example.medgemma.ui.components.GlassStyle
-import com.example.medgemma.ui.components.frostedGlassBar
-import com.example.medgemma.ui.components.frostedGlassChip
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
-import dev.chrisbanes.haze.rememberHazeState
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -104,10 +92,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.medgemma.ui.theme.HealRed
 import com.example.medgemma.ui.theme.MedGemmaTheme
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
@@ -153,21 +141,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable
-fun HeartbeatIndicator() {
-    val infiniteTransition = rememberInfiniteTransition(label = "heartbeat")
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 1.3f,
-        animationSpec = infiniteRepeatable(
-            animation = keyframes { durationMillis = 1200; 1f at 0; 1.3f at 150; 1f at 300; 1.3f at 450; 1f at 600; 1f at 1200 },
-            repeatMode = RepeatMode.Restart
-        ), label = "scale"
-    )
-    Icon(imageVector = Icons.Default.Favorite, contentDescription = "Generating response", tint = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.size(18.dp).graphicsLayer { scaleX = scale; scaleY = scale })
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel = viewModel(),
@@ -179,7 +153,6 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var imageBytes by remember { mutableStateOf<ByteArray?>(null) }
-    var showModelSheet by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var showDisclaimerDialog by remember {
         mutableStateOf(!ChatPreferences.isDisclaimerAcknowledged(context))
@@ -189,8 +162,8 @@ fun ChatScreen(
     val isGenerating by viewModel.isGenerating.collectAsState()
     val listState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val hazeState = rememberHazeState()
     val density = LocalDensity.current
+    val reducedMotion = rememberReducedMotion()
     var topBarHeightPx by remember { mutableIntStateOf(0) }
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
     val isInputEnabled = uiState is ChatUiState.Idle && !isGenerating
@@ -296,12 +269,6 @@ fun ChatScreen(
         }
     }
 
-    val isListScrolling by remember {
-        derivedStateOf { listState.isScrollInProgress }
-    }
-    // Soft glass while generating or scrolling — thick frost only when idle.
-    val softHaze = isGenerating || isListScrolling
-
     // Re-enable follow mode when the user manually returns to the bottom.
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.isNearBottom() }
@@ -320,13 +287,11 @@ fun ChatScreen(
         }
     }
 
-    // Throttle follow-scroll during stream (~8Hz) so measure/scroll/haze don't thrash every flush.
+    // Throttle follow-scroll during stream (~8Hz) so measure/scroll don't thrash every flush.
     LaunchedEffect(isGenerating) {
         if (!isGenerating) return@LaunchedEffect
         snapshotFlow {
-            messages.lastOrNull()?.let { msg ->
-                msg.content.length + (msg.thought?.length ?: 0)
-            } ?: 0
+            messages.lastOrNull()?.content?.length ?: 0
         }.collect {
             if (autoScrollEnabled && messages.isNotEmpty()) {
                 scrollChatToLatest(animated = false)
@@ -399,8 +364,7 @@ fun ChatScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .nestedScroll(userScrollConnection)
-                .hazeSource(state = hazeState),
+                .nestedScroll(userScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 start = 16.dp,
@@ -419,8 +383,7 @@ fun ChatScreen(
                     message = message,
                     isStreaming = isGenerating &&
                         index == messages.lastIndex &&
-                        !message.isUser &&
-                        message.stats == null
+                        !message.isUser
                 )
             }
             if (uiState is ChatUiState.Idle && messages.isEmpty()) {
@@ -438,38 +401,32 @@ fun ChatScreen(
                     )
                 }
             }
-            if (uiState is ChatUiState.Loading && messages.isEmpty()) {
+            val showLoading = messages.isEmpty() &&
+                (uiState is ChatUiState.Loading || uiState is ChatUiState.ModelAvailable)
+            if (showLoading) {
                 item {
                     Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
                         TypingIndicator(
-                            message = (uiState as ChatUiState.Loading).message,
-                            subtitle = "This may take a minute on first launch"
+                            message = "Loading…",
+                            subtitle = "First launch may take a minute."
                         )
                     }
                 }
             }
             if (uiState is ChatUiState.Error) {
-                item { ErrorState((uiState as ChatUiState.Error).message) { showModelSheet = true } }
+                item {
+                    ErrorState((uiState as ChatUiState.Error).message) {
+                        viewModel.retryLastError()
+                    }
+                }
             }
             if (uiState is ChatUiState.NoModel) {
                 item {
                     EmptyState(
-                        icon = Icons.Default.Download,
-                        title = "Model required",
-                        subtitle = "Download a model to begin chatting.",
-                        actionText = "Open models",
-                        onAction = { showModelSheet = true }
-                    )
-                }
-            }
-            if (uiState is ChatUiState.ModelAvailable) {
-                item {
-                    EmptyState(
-                        icon = Icons.Default.CheckCircle,
-                        title = "Ready to start",
-                        subtitle = "Models are downloaded. Load them into memory to chat.",
-                        actionText = "Load model",
-                        onAction = { viewModel.initializeEngine() }
+                        title = "Model not found",
+                        subtitle = "Push model.gguf and mmproj.gguf to /data/local/tmp/models, then return.",
+                        actionText = "Check again",
+                        onAction = { viewModel.rescanModels() }
                     )
                 }
             }
@@ -480,89 +437,47 @@ fun ChatScreen(
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .onSizeChanged { topBarHeightPx = it.height }
-                .frostedGlassBar(hazeState, soft = softHaze)
                 .statusBarsPadding()
         ) {
             CenterAlignedTopAppBar(
-                    navigationIcon = {
-                        IconButton(
-                            onClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                showModelSheet = true
-                            },
-                            enabled = !isGenerating
-                        ) {
-                            Icon(
-                                Icons.Default.Tune,
-                                contentDescription = "Models and settings",
-                                tint = MaterialTheme.colorScheme.onBackground
-                            )
-                        }
-                    },
-                    title = {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                "Heal",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            val engineStatus = when (val state = uiState) {
-                                is ChatUiState.NoModel -> "Offline"
-                                is ChatUiState.ModelAvailable -> "Ready to load"
-                                is ChatUiState.Loading -> state.message
-                                is ChatUiState.Error -> "Error"
-                                is ChatUiState.Idle -> if (isGenerating) "Responding" else "Ready"
-                            }
-                            val isOnline = uiState is ChatUiState.Idle || uiState is ChatUiState.ModelAvailable
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (isOnline) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    engineStatus,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    },
-                    actions = {
-                        IconButton(
-                            onClick = { showClearConfirm = true },
-                            enabled = messages.isNotEmpty() && !isGenerating
-                        ) {
-                            Icon(
-                                Icons.Default.EditNote,
-                                contentDescription = "New chat",
-                                tint = MaterialTheme.colorScheme.onBackground
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                        containerColor = Color.Transparent,
-                        titleContentColor = MaterialTheme.colorScheme.onBackground
+                navigationIcon = {
+                    // Same width as the new-chat action so the title stays centered.
+                    Spacer(modifier = Modifier.size(48.dp))
+                },
+                title = {
+                    Text(
+                        "Heal",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onBackground
                     )
+                },
+                actions = {
+                    IconButton(
+                        onClick = { showClearConfirm = true },
+                        enabled = messages.isNotEmpty() && !isGenerating
+                    ) {
+                        Icon(
+                            Icons.Default.EditNote,
+                            contentDescription = "New chat",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = Color.Transparent,
+                    scrolledContainerColor = Color.Transparent,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
                 )
-            HorizontalDivider(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
             )
         }
 
+        val lookingAtImage = messages.lastOrNull { it.isUser }?.imageUri != null
         ChatComposerBar(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onSizeChanged { bottomBarHeightPx = it.height }
-                .frostedGlassBar(hazeState, soft = softHaze)
+                .background(MaterialTheme.colorScheme.surface)
                 .imePadding()
                 .navigationBarsPadding(),
             inputText = inputText,
@@ -577,14 +492,12 @@ fun ChatScreen(
             canAttach = uiState is ChatUiState.Idle && !isGenerating,
             canSend = (uiState is ChatUiState.Idle || isGenerating) &&
                 (inputText.isNotBlank() || imageBytes != null || isGenerating),
-            placeholder = when (uiState) {
-                is ChatUiState.NoModel -> "Download a model to chat…"
-                is ChatUiState.ModelAvailable -> "Load model to chat…"
-                is ChatUiState.Loading ->
-                    if (messages.isEmpty()) "Loading model…" else "Heal is responding…"
-                is ChatUiState.Error -> "Fix error in settings…"
-                is ChatUiState.Idle -> "Message Heal…"
+            placeholder = when {
+                isGenerating && lookingAtImage -> "Looking at image…"
+                isGenerating -> "Responding"
+                else -> "Message Heal…"
             },
+            reducedMotion = reducedMotion,
             onAttach = {
                 photoPickerLauncher.launch(
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -607,59 +520,40 @@ fun ChatScreen(
                 .padding(bottom = with(density) { bottomBarHeightPx.toDp() })
         )
 
-        if (showScrollToBottom) {
-            Box(
+        val jumpDuration = motionDurationMs(reducedMotion, 180)
+        AnimatedVisibility(
+            visible = showScrollToBottom,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(
+                    end = 16.dp,
+                    bottom = with(density) { bottomBarHeightPx.toDp() } + 14.dp
+                ),
+            enter = fadeIn(motionTween(jumpDuration)),
+            exit = fadeOut(motionTween(jumpDuration))
+        ) {
+            Surface(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(
-                        end = 16.dp,
-                        bottom = with(density) { bottomBarHeightPx.toDp() } + 14.dp
-                    )
                     .size(40.dp)
                     .clip(CircleShape)
-                    .frostedGlassChip(hazeState, soft = softHaze)
-                    .border(GlassStyle.border(0.14f), CircleShape)
                     .clickable {
                         scope.launch { scrollChatToLatest(animated = true) }
                     },
-                contentAlignment = Alignment.Center
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                border = GlassStyle.border(0.14f)
             ) {
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Scroll to latest message",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(22.dp)
-                )
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Scroll to latest message",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
-        }
-    }
-    if (showModelSheet) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        val sheetScope = rememberCoroutineScope()
-        fun dismissModelSheet() {
-            sheetScope.launch {
-                sheetState.hide()
-            }.invokeOnCompletion {
-                if (!sheetState.isVisible) showModelSheet = false
-            }
-        }
-        ModalBottomSheet(
-            onDismissRequest = { showModelSheet = false },
-            sheetState = sheetState,
-            // Full edge-to-edge sheet; we own status/nav insets so the handle
-            // never sits under the camera notch.
-            contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            containerColor = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            tonalElevation = 0.dp,
-            scrimColor = Color.Black.copy(alpha = 0.52f),
-            dragHandle = null
-        ) {
-            ModelHubSheet(
-                viewModel = viewModel,
-                onDismiss = { dismissModelSheet() }
-            )
         }
     }
 }
@@ -674,19 +568,12 @@ fun ConversationStarters(
             .fillMaxWidth()
             .padding(vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
             "Try asking",
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onBackground
-        )
-        Text(
-            "Not medical advice — always consult a professional.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
         )
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -709,38 +596,24 @@ fun ConversationStarters(
 }
 
 @Composable
-fun LazyItemScope.EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, actionText: String, onAction: () -> Unit) {
+fun LazyItemScope.EmptyState(title: String, subtitle: String, actionText: String, onAction: () -> Unit) {
     Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
-            Box(
-                modifier = Modifier
-                    .size(80.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(32.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(modifier = Modifier.height(24.dp))
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(24.dp),
+            modifier = Modifier.padding(horizontal = 32.dp)
+        ) {
             Text(
                 title,
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground
             )
-            Spacer(modifier = Modifier.height(8.dp))
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(32.dp))
             HealButton(text = actionText, onClick = onAction, modifier = Modifier.fillMaxWidth())
         }
     }
@@ -751,7 +624,7 @@ fun HealButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     Surface(
         onClick = onClick,
         modifier = modifier.height(48.dp),
-        color = if (isPrimary) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+        color = if (isPrimary) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent,
         shape = MaterialTheme.shapes.medium,
         border = if (isPrimary) {
             androidx.compose.foundation.BorderStroke(
@@ -764,13 +637,12 @@ fun HealButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
             Text(
                 text = text,
                 color = if (isPrimary) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
+                    MaterialTheme.colorScheme.onSurface
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
                 style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 1.sp
+                fontWeight = FontWeight.Medium
             )
         }
     }
@@ -784,7 +656,7 @@ fun ErrorState(message: String, onCheck: () -> Unit) {
         shape = MaterialTheme.shapes.large,
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
-            MaterialTheme.colorScheme.error.copy(alpha = 0.3f)
+            HealRed.copy(alpha = 0.3f)
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -792,7 +664,7 @@ fun ErrorState(message: String, onCheck: () -> Unit) {
                 Icon(
                     Icons.Default.Clear,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
+                    tint = HealRed,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -810,289 +682,8 @@ fun ErrorState(message: String, onCheck: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall
             )
             Spacer(modifier = Modifier.height(16.dp))
-            HealButton(text = "Settings", onClick = onCheck, isPrimary = false, modifier = Modifier.fillMaxWidth())
+            HealButton(text = "Try again", onClick = onCheck, isPrimary = false, modifier = Modifier.fillMaxWidth())
         }
-    }
-}
-
-/**
- * Models & settings sheet — edge-to-edge safe under camera notch, LazyColumn for
- * smooth scroll, explicit close + drag-to-dismiss.
- */
-@Composable
-fun ModelHubSheet(
-    viewModel: ChatViewModel,
-    onDismiss: () -> Unit
-) {
-    val downloadProgress by viewModel.modelManager.downloadProgress.collectAsState()
-    val downloadedFiles by viewModel.modelManager.downloadedFiles.collectAsState()
-    var tokenInput by remember { mutableStateOf(viewModel.modelManager.hfToken ?: "") }
-    val llmModels = viewModel.modelManager.availableLlmModels
-    val mmprojModels = viewModel.modelManager.availableMmprojModels
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fillMaxHeight(0.94f)
-            // Handle sits below status bar / camera cutout.
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .navigationBarsPadding()
-    ) {
-        // Drag affordance + chrome header (pinned; list scrolls underneath).
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp, bottom = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Box(
-                modifier = Modifier
-                    .width(36.dp)
-                    .height(4.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f))
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Models & settings",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        "Weights, vision, and access",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(GlassStyle.iconWell())
-                ) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Close",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-            )
-        }
-
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            item(key = "token", contentType = "token") {
-                Text(
-                    "Hugging Face token",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = tokenInput,
-                    onValueChange = {
-                        tokenInput = it
-                        viewModel.modelManager.hfToken = it
-                    },
-                    placeholder = {
-                        Text(
-                            "hf_… (optional for public models)",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                        unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
-                        focusedContainerColor = GlassStyle.field(),
-                        unfocusedContainerColor = GlassStyle.field(),
-                        cursorColor = MaterialTheme.colorScheme.onSurface
-                    )
-                )
-            }
-
-            item(key = "llm-header", contentType = "section") {
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    "Language models",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-            items(
-                items = llmModels,
-                key = { it.fileName },
-                contentType = { "model" }
-            ) { model ->
-                ModelItem(
-                    model = model,
-                    isDownloaded = model.fileName in downloadedFiles,
-                    downloadProgress = downloadProgress[model.fileName],
-                    onDownload = { viewModel.downloadModel(model) },
-                    onCancel = { viewModel.cancelDownload(model) }
-                )
-            }
-
-            item(key = "mmproj-header", contentType = "section") {
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    "Vision projectors",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-            items(
-                items = mmprojModels,
-                key = { it.fileName },
-                contentType = { "model" }
-            ) { model ->
-                ModelItem(
-                    model = model,
-                    isDownloaded = model.fileName in downloadedFiles,
-                    downloadProgress = downloadProgress[model.fileName],
-                    onDownload = { viewModel.downloadModel(model) },
-                    onCancel = { viewModel.cancelDownload(model) }
-                )
-            }
-
-            item(key = "footer-space") {
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-        }
-    }
-}
-
-@Composable
-fun ModelItem(
-    model: GgufModel,
-    isDownloaded: Boolean,
-    downloadProgress: DownloadProgress?,
-    onDownload: () -> Unit,
-    onCancel: () -> Unit = {}
-) {
-    val isDownloading = downloadProgress?.isDownloading == true
-    val progress = downloadProgress?.progress ?: 0f
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = if (isDownloaded) GlassStyle.inset() else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f),
-        border = GlassStyle.border(if (isDownloaded) 0.12f else 0.08f)
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        model.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        buildString {
-                            append(model.sizeLabel.ifBlank { "GGUF" })
-                            if (model.sizeLabel.isNotBlank()) append(" · ")
-                            append(model.fileName.removeSuffix(".gguf").take(28))
-                            if (model.fileName.length > 32) append("…")
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                when {
-                    isDownloaded -> {
-                        Icon(
-                            Icons.Default.CheckCircle,
-                            contentDescription = "Downloaded",
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                    isDownloading -> {
-                        IconButton(
-                            onClick = onCancel,
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(GlassStyle.iconWell())
-                        ) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Cancel download",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    else -> {
-                        IconButton(
-                            onClick = onDownload,
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(GlassStyle.iconWell())
-                        ) {
-                            Icon(
-                                Icons.Default.Download,
-                                contentDescription = "Download ${model.name}",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                }
-            }
-            if (isDownloading) {
-                Spacer(modifier = Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp)
-                        .clip(CircleShape),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                    trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "${(progress * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun NeuralPulse(modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val alpha by infiniteTransition.animateFloat(initialValue = 0.3f, targetValue = 1f, animationSpec = infiniteRepeatable(animation = tween(1000, easing = FastOutSlowInEasing), repeatMode = RepeatMode.Reverse), label = "alpha")
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(modifier = Modifier.size(6.dp).graphicsLayer { this.alpha = alpha }.clip(CircleShape).background(MaterialTheme.colorScheme.primary))
-        Text("Thinking", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f), fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1107,7 +698,6 @@ private val ComposerHitSize = 48.dp
 private val ComposerExpandedMinHeight = 92.dp
 private val ComposerGlyphSize = 40.dp
 private val ComposerIconSize = 22.dp
-private val ComposerPillShape = RoundedCornerShape(26.dp)
 private val ComposerInnerPad = 6.dp
 /**
  * Top pad so the first text line (~22sp) optically centers with the 48dp
@@ -1115,16 +705,6 @@ private val ComposerInnerPad = 6.dp
  */
 private val ComposerTextPadTop = 13.dp
 private val ComposerTextPadBottom = 13.dp
-
-/**
- * Snappy IME expand — short ease-out only.
- * Do **not** combine with [animateContentSize] on the same height change;
- * two overlapping size animations read as lag.
- */
-private val ComposerExpandDpSpec = tween<Dp>(
-    durationMillis = 120,
-    easing = FastOutSlowInEasing
-)
 
 /**
  * Chat input bar: one glass pill with three perfectly aligned controls
@@ -1147,18 +727,21 @@ private fun ChatComposerBar(
     placeholder: String,
     onAttach: () -> Unit,
     onSendOrStop: () -> Unit,
+    reducedMotion: Boolean,
     modifier: Modifier = Modifier
 ) {
     val fieldActive = isInputEnabled || isGenerating
     val onSurface = MaterialTheme.colorScheme.onSurface
     val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
     val density = LocalDensity.current
+    val expandMs = motionDurationMs(reducedMotion, 120, reducedMs = 80)
+    val chipFadeMs = motionDurationMs(reducedMotion, 120, reducedMs = 80)
 
     // True while the soft keyboard is visible (after imePadding is applied).
     val imeOpen = WindowInsets.ime.getBottom(density) > 0
     val fieldMinHeight by animateDpAsState(
         targetValue = if (imeOpen) ComposerExpandedMinHeight else ComposerHitSize,
-        animationSpec = ComposerExpandDpSpec,
+        animationSpec = motionTween<Dp>(expandMs),
         label = "composer-field-min"
     )
 
@@ -1169,7 +752,7 @@ private fun ChatComposerBar(
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = ComposerPillShape,
+            shape = MaterialTheme.shapes.extraLarge,
             color = if (fieldActive) GlassStyle.field() else GlassStyle.fieldDisabled(),
             border = GlassStyle.border(if (fieldActive) 0.12f else 0.07f),
             tonalElevation = 0.dp,
@@ -1180,7 +763,11 @@ private fun ChatComposerBar(
                     .fillMaxWidth()
                     .padding(ComposerInnerPad)
             ) {
-                AnimatedVisibility(visible = selectedImageUri != null) {
+                AnimatedVisibility(
+                    visible = selectedImageUri != null,
+                    enter = fadeIn(motionTween(chipFadeMs)),
+                    exit = fadeOut(motionTween(chipFadeMs))
+                ) {
                     selectedImageUri?.let { uri ->
                         InputImageChip(
                             uri = uri,
@@ -1270,7 +857,8 @@ private fun ChatComposerBar(
                     SendHaltButton(
                         isGenerating = isGenerating,
                         enabled = canSend,
-                        onClick = onSendOrStop
+                        onClick = onSendOrStop,
+                        reducedMotion = reducedMotion
                     )
                 }
             }
@@ -1386,52 +974,32 @@ private fun InputImageChip(
 
 /**
  * Send / halt — same 48dp hit target as attach.
- * Idle/disabled: soft well + muted arrow.
- * Ready: filled monochrome disc + inverted arrow.
- * Generating: orbit + stop square (quiet monochrome, no red).
+ * Idle/ready: HealRed disc + send arrow.
+ * Generating: static stop icon (no orbit / breath).
  */
 @Composable
 private fun SendHaltButton(
     isGenerating: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
+    reducedMotion: Boolean,
     modifier: Modifier = Modifier
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val surface = MaterialTheme.colorScheme.surface
     val interaction = remember { MutableInteractionSource() }
+    val fillMs = motionDurationMs(reducedMotion, 120, reducedMs = 80)
+    val swapMs = motionDurationMs(reducedMotion, 120, reducedMs = 80)
 
-    // Cross-fade the disc fill when send becomes available — snappy, not flashy.
     val fillAlpha by animateFloatAsState(
         targetValue = when {
             isGenerating -> 0.14f
             enabled -> 1f
             else -> 0.14f
         },
-        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        animationSpec = motionTween(fillMs),
         label = "send-fill"
     )
     val isFilled = enabled && !isGenerating
-
-    val infinite = rememberInfiniteTransition(label = "halt-orbit")
-    val orbit by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "orbit"
-    )
-    val breath by infinite.animateFloat(
-        initialValue = 0.30f,
-        targetValue = 0.75f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 850, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "breath"
-    )
 
     Box(
         modifier = modifier
@@ -1448,13 +1016,12 @@ private fun SendHaltButton(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Visual disc — identical diameter to attach well so the pair is symmetric.
         Box(
             modifier = Modifier
                 .size(ComposerGlyphSize)
                 .clip(CircleShape)
                 .background(
-                    if (isFilled) onSurface
+                    if (isFilled) HealRed
                     else onSurface.copy(alpha = fillAlpha)
                 ),
             contentAlignment = Alignment.Center
@@ -1462,68 +1029,26 @@ private fun SendHaltButton(
             AnimatedContent(
                 targetState = isGenerating,
                 transitionSpec = {
-                    (fadeIn(tween(120)) + scaleIn(initialScale = 0.90f, animationSpec = tween(140)))
-                        .togetherWith(
-                            fadeOut(tween(90)) +
-                                scaleOut(targetScale = 0.90f, animationSpec = tween(90))
-                        )
+                    fadeIn(motionTween(swapMs)).togetherWith(fadeOut(motionTween(swapMs)))
                 },
                 label = "send-halt"
             ) { generating ->
                 if (generating) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Canvas(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(6.dp)
-                                .graphicsLayer { rotationZ = orbit }
-                        ) {
-                            val stroke = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
-                            val inset = stroke.width / 2f
-                            val arcSize = Size(
-                                size.width - stroke.width,
-                                size.height - stroke.width
-                            )
-                            val topLeft = Offset(inset, inset)
-                            drawArc(
-                                color = onSurface.copy(alpha = breath),
-                                startAngle = -18f,
-                                sweepAngle = 72f,
-                                useCenter = false,
-                                topLeft = topLeft,
-                                size = arcSize,
-                                style = stroke
-                            )
-                            drawArc(
-                                color = onSurface.copy(alpha = breath * 0.4f),
-                                startAngle = 165f,
-                                sweepAngle = 48f,
-                                useCenter = false,
-                                topLeft = topLeft,
-                                size = arcSize,
-                                style = stroke
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(onSurface)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Stop,
+                        contentDescription = null,
+                        tint = onSurface,
+                        modifier = Modifier.size(18.dp)
+                    )
                 } else {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = null,
                         tint = if (isFilled) {
-                            surface
+                            Color.White
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
                         },
-                        // Optical nudge: Send glyph is heavier on the right.
                         modifier = Modifier
                             .size(18.dp)
                             .padding(start = 1.dp)
@@ -1624,12 +1149,8 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
     }
     val hasImage = message.imageUri != null
     val hasCaption = message.content.isNotBlank()
-    // Bubble only when there is text / assistant chrome — image lives outside it.
-    val showBubble = hasCaption ||
-        !message.isUser ||
-        message.thought != null ||
-        message.stats != null
-    var isThoughtExpanded by remember { mutableStateOf(false) }
+    val showBubble = hasCaption
+    if (!hasImage && !showBubble) return
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = horizontal
@@ -1670,84 +1191,6 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
                     Column(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
                     ) {
-                        if (!message.isUser && message.thought != null) {
-                            val thoughtPreview = message.thought.lineSequence()
-                                .firstOrNull { it.isNotBlank() }
-                                ?.take(80)
-                                ?.let { if (message.thought.length > 80) "$it…" else it }
-                            val insetShape = RoundedCornerShape(12.dp)
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 10.dp)
-                                    .clip(insetShape)
-                                    .border(GlassStyle.border(0.08f), insetShape)
-                                    .background(GlassStyle.inset())
-                                    .clickable { isThoughtExpanded = !isThoughtExpanded }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                            ) {
-                                Column {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                Icons.Default.Psychology,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(14.dp),
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = "Reasoning",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        Icon(
-                                            imageVector = if (isThoughtExpanded) {
-                                                Icons.Default.KeyboardArrowUp
-                                            } else {
-                                                Icons.Default.KeyboardArrowDown
-                                            },
-                                            contentDescription = if (isThoughtExpanded) {
-                                                "Collapse reasoning"
-                                            } else {
-                                                "Expand reasoning"
-                                            },
-                                            modifier = Modifier.size(16.dp),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    if (!isThoughtExpanded && thoughtPreview != null) {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = thoughtPreview,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1
-                                        )
-                                    }
-                                    AnimatedVisibility(visible = isThoughtExpanded) {
-                                        Column {
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            MarkdownText(
-                                                text = message.thought,
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    fontSize = 12.sp,
-                                                    lineHeight = 16.sp
-                                                ),
-                                                modifier = Modifier.fillMaxWidth()
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         if (message.isUser) {
                             if (hasCaption) {
                                 Text(
@@ -1757,26 +1200,12 @@ fun ChatMessageItem(message: ChatMessage, isStreaming: Boolean = false) {
                                     fontWeight = FontWeight.Medium
                                 )
                             }
-                        } else {
-                            if (message.content.isEmpty()) {
-                                if (message.thought == null) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        HeartbeatIndicator()
-                                    }
-                                } else {
-                                    NeuralPulse(modifier = Modifier.padding(top = 4.dp))
-                                }
-                            } else {
-                                // Live markdown while streaming (memoized parse in MarkdownText).
-                                MarkdownText(
-                                    text = message.content,
-                                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                        }
-                        if (message.stats != null && !message.isUser) {
-                            MessageStatsRow(stats = message.stats)
+                        } else if (message.content.isNotEmpty()) {
+                            MarkdownText(
+                                text = message.content,
+                                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 22.sp),
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                         if (!message.isUser && message.content.isNotBlank() && !isStreaming) {
                             Spacer(modifier = Modifier.height(8.dp))
@@ -1858,8 +1287,25 @@ private fun FullscreenImageViewer(
     uri: Uri,
     onDismiss: () -> Unit
 ) {
+    val reducedMotion = rememberReducedMotion()
+    val fadeMs = motionDurationMs(reducedMotion, 200, reducedMs = 80)
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    val alpha by animateFloatAsState(
+        targetValue = if (shown) 1f else 0f,
+        animationSpec = motionTween(fadeMs),
+        finishedListener = { if (!shown) onDismiss() },
+        label = "lightbox-fade"
+    )
+    fun requestDismiss() {
+        if (fadeMs == 0) {
+            onDismiss()
+        } else {
+            shown = false
+        }
+    }
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { requestDismiss() },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false
@@ -1868,11 +1314,12 @@ private fun FullscreenImageViewer(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer { this.alpha = alpha }
                 .background(Color.Black.copy(alpha = 0.92f))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onClick = onDismiss
+                    onClick = { requestDismiss() }
                 )
                 .statusBarsPadding()
                 .navigationBarsPadding()
@@ -1884,13 +1331,12 @@ private fun FullscreenImageViewer(
                 model = ImageRequest.Builder(viewerContext)
                     .data(uri)
                     .size(maxSide)
-                    .crossfade(true)
+                    .crossfade(false)
                     .build(),
                 contentDescription = "Expanded image",
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 12.dp, vertical = 48.dp)
-                    // Absorb taps on the image so only the dimmed chrome dismisses.
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -1899,7 +1345,7 @@ private fun FullscreenImageViewer(
                 contentScale = androidx.compose.ui.layout.ContentScale.Fit
             )
             IconButton(
-                onClick = onDismiss,
+                onClick = { requestDismiss() },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(8.dp)
@@ -1914,41 +1360,6 @@ private fun FullscreenImageViewer(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun MessageStatsRow(stats: String) {
-    var expanded by remember { mutableStateOf(false) }
-    val parsed = remember(stats) { formatMessageStats(stats) }
-    Spacer(modifier = Modifier.height(12.dp))
-    Row(
-        modifier = Modifier
-            .clip(MaterialTheme.shapes.small)
-            .clickable { expanded = !expanded }
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = parsed.summary,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Icon(
-            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-            contentDescription = if (expanded) "Hide details" else "Show details",
-            modifier = Modifier.size(14.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-    AnimatedVisibility(visible = expanded) {
-        Text(
-            text = parsed.details,
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-            modifier = Modifier.padding(top = 4.dp)
-        )
     }
 }
 
@@ -2114,7 +1525,7 @@ private fun AnnotatedString.Builder.appendIncompleteMarkdown(
 @Composable
 fun MarkdownText(text: String?, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier) {
     if (text == null) return
-    val linkColor = MaterialTheme.colorScheme.primary
+    val linkColor = MaterialTheme.colorScheme.onSurface
     // One AnnotatedString → one Text. Live markdown, far fewer layout nodes than per-line Columns.
     val annotated = remember(text, style, linkColor) {
         buildMarkdownAnnotated(text, style, linkColor)
@@ -2131,16 +1542,15 @@ fun TypingIndicator(message: String, subtitle: String? = null) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
         Text(
             message,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onBackground,
-            fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center
         )
         if (subtitle != null) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 subtitle,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
@@ -2149,7 +1559,41 @@ fun TypingIndicator(message: String, subtitle: String? = null) {
         CircularProgressIndicator(
             modifier = Modifier.size(28.dp),
             strokeWidth = 2.5.dp,
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.onSurface
         )
+    }
+}
+
+@Composable
+private fun rememberReducedMotion(): Boolean {
+    val context = LocalContext.current
+    return remember {
+        val scale = try {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            )
+        } catch (_: Throwable) {
+            1f
+        }
+        scale == 0f || !ValueAnimator.areAnimatorsEnabled()
+    }
+}
+
+private fun motionDurationMs(
+    reducedMotion: Boolean,
+    normalMs: Int,
+    reducedMs: Int = 80
+): Int {
+    if (!ValueAnimator.areAnimatorsEnabled()) return 0
+    return if (reducedMotion) reducedMs else normalMs
+}
+
+private fun <T> motionTween(durationMs: Int): FiniteAnimationSpec<T> {
+    return if (durationMs <= 0) {
+        snap()
+    } else {
+        tween(durationMillis = durationMs, easing = FastOutSlowInEasing)
     }
 }
