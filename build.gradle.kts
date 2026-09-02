@@ -91,8 +91,6 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("dev.chrisbanes.haze:haze:1.6.10")
-    implementation("dev.chrisbanes.haze:haze-materials:1.6.10")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

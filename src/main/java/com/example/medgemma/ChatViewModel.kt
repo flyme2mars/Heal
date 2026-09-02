@@ -85,6 +85,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Rescan /data/local/tmp/models (and any cached downloads), then auto-load if both weights exist. */
+    fun rescanModels() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                modelManager.refreshDownloadedCache()
+            }
+            checkModelStatus()
+            maybeAutoLoadEngine()
+        }
+    }
+
+    /** Error card — retry load, or return to chat if the engine is already up. */
+    fun retryLastError() {
+        if (ggufManager.isInitialized) {
+            _uiState.value = ChatUiState.Idle
+            return
+        }
+        rescanModels()
+    }
+
     private fun maybeAutoLoadEngine() {
         if (!uiReady) return
         viewModelScope.launch {
@@ -102,11 +122,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun initializeEngine() {
+        if (_uiState.value is ChatUiState.Loading) return
         viewModelScope.launch {
             val llmPath = modelManager.getDownloadedLlmPath()
             val mmprojPath = modelManager.getDownloadedMmprojPath()
             if (llmPath == null || mmprojPath == null) return@launch
-            _uiState.value = ChatUiState.Loading("Loading model weights…")
+            _uiState.value = ChatUiState.Loading("Loading…")
             android.util.Log.i("ChatViewModel", "Loading model: $llmPath")
             val result = ggufManager.initialize(llmPath, mmprojPath)
             android.util.Log.i("ChatViewModel", "Init result: ${if (result.isSuccess) "OK" else result.exceptionOrNull()?.message}")
@@ -114,9 +135,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.value = ChatUiState.Idle
                 _snackbar.emit(SnackbarMessage("Model loaded — you're ready to chat"))
             } else {
-                val error = "Init failed: ${result.exceptionOrNull()?.message}"
-                _uiState.value = ChatUiState.Error(error)
-                _snackbar.emit(SnackbarMessage(error, isError = true))
+                android.util.Log.e("ChatViewModel", "Init failed", result.exceptionOrNull())
+                _uiState.value = ChatUiState.Error(LOAD_ERROR)
+                _snackbar.emit(SnackbarMessage(LOAD_ERROR, isError = true))
             }
         }
     }
@@ -154,9 +175,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _messages.add(ChatMessage(text, isUser = true, imageUri = stableImageUri))
 
             _isGenerating.value = true
-            _uiState.value = ChatUiState.Loading(
-                if (imageBytes != null) "Analyzing image…" else "Thinking…"
-            )
             val assistantMessage = ChatMessage("", isUser = false)
             _messages.add(assistantMessage)
             val assistantIndex = _messages.size - 1
@@ -184,8 +202,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 .flowOn(Dispatchers.Default)
                 .collect { action ->
                     when (action) {
-                        is StreamContentBuffer.Action.Error ->
-                            _uiState.value = ChatUiState.Error(action.message)
+                        is StreamContentBuffer.Action.Error -> {
+                            _uiState.value = ChatUiState.Error(GENERATE_ERROR)
+                            _snackbar.emit(SnackbarMessage(GENERATE_ERROR, isError = true))
+                        }
                         is StreamContentBuffer.Action.UpdateUi -> {
                             applyUi(action)
                             if (_uiState.value is ChatUiState.Loading) {
@@ -200,7 +220,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 else -> Unit
             }
             _isGenerating.value = false
-            _uiState.value = ChatUiState.Idle
+            if (_uiState.value !is ChatUiState.Error) {
+                _uiState.value = ChatUiState.Idle
+            }
         }
+    }
+
+    companion object {
+        const val LOAD_ERROR = "Couldn't load the model. Please try again."
+        const val GENERATE_ERROR = "Something went wrong. Please try again."
     }
 }

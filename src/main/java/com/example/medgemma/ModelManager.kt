@@ -286,6 +286,7 @@ class ModelManager(private val context: Context) {
     private class DownloadCancelledException : IOException("Download cancelled")
 
     fun getDownloadedLlmPath(): String? {
+        adbWeightPath(ADB_LLM_NAME)?.let { return it }
         val names = _downloadedFiles.value
         val fileName = availableLlmModels.firstOrNull { it.fileName in names }?.fileName ?: return null
         val file = File(getModelDir(), fileName)
@@ -293,10 +294,17 @@ class ModelManager(private val context: Context) {
     }
 
     fun getDownloadedMmprojPath(): String? {
+        adbWeightPath(ADB_MMPROJ_NAME)?.let { return it }
         val names = _downloadedFiles.value
         val fileName = availableMmprojModels.firstOrNull { it.fileName in names }?.fileName ?: return null
         val file = File(getModelDir(), fileName)
         return if (file.exists()) file.absolutePath else null
+    }
+
+    /** On-device weights pushed via adb to /data/local/tmp/models. */
+    private fun adbWeightPath(fileName: String): String? {
+        val file = File(ADB_MODEL_DIR, fileName)
+        return if (file.isFile && file.canRead()) file.absolutePath else null
     }
 
     private fun emitProgress(
@@ -351,5 +359,8 @@ class ModelManager(private val context: Context) {
         private const val PROGRESS_STEP = 0.01f
         private const val PROGRESS_INTERVAL_MS = 200L
         private const val MIN_FREE_MARGIN_BYTES = 64L * 1024 * 1024
+        const val ADB_MODEL_DIR = "/data/local/tmp/models"
+        const val ADB_LLM_NAME = "model.gguf"
+        const val ADB_MMPROJ_NAME = "mmproj.gguf"
     }
 }
